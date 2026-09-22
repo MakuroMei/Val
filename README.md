@@ -1,3 +1,4 @@
+[試玩](https://makuromei.github.io/Val/)
  # Valkyrie frontend rebuild - Stage 1
 
 這是一個「純前端重寫」原型，不包含 NES CPU/PPU 模擬器。
