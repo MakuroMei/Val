@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Valkyrie Frontend Rebuild - Stage 1</title>
+<style>
+:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:#101014;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#ddd}
+.wrap{display:flex;flex-direction:column;align-items:center;gap:10px;padding:16px}.frame{position:relative;background:#000;padding:8px;border:1px solid #444;box-shadow:0 18px 60px #0008}
+canvas{width:min(768px,calc(100vw - 48px));height:auto;aspect-ratio:256/240;image-rendering:pixelated;display:block;background:#000}.hint{font-size:12px;opacity:.78;text-align:center;line-height:1.6;max-width:760px}.tag{opacity:.55}
+.controls{display:none;grid-template-columns:repeat(3,48px);grid-template-rows:repeat(2,48px);gap:5px;user-select:none}.controls button,.startbtn{border:1px solid #555;background:#1b1b20;color:#eee;border-radius:8px;font:700 18px monospace;touch-action:none}.controls .up{grid-column:2}.controls .left{grid-row:2;grid-column:1}.controls .down{grid-row:2;grid-column:2}.controls .right{grid-row:2;grid-column:3}.startbtn{padding:9px 18px;font-size:12px}@media(pointer:coarse){.controls{display:grid}}
+</style></head><body><div class="wrap"><div class="frame"><canvas id="game" width="256" height="240"></canvas></div>
+<div class="controls"><button class="up" data-key="ArrowUp">▲</button><button class="left" data-key="ArrowLeft">◀</button><button class="down" data-key="ArrowDown">▼</button><button class="right" data-key="ArrowRight">▶</button></div><button class="startbtn" id="startBtn">START / ENTER</button>
+<div class="hint">方向鍵 / WASD 移動・Enter 開始・R 回標題・F2 顯示除錯資訊<br><span class="tag">Stage 1：純前端重建，沒有 6502 CPU、PPU 或 NES 模擬器。</span></div></div>
+<script src="data.js"></script><script src="app.js"></script></body></html>
