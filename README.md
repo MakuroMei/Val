@@ -1,29 +1,51 @@
 [試玩](https://makuromei.github.io/Val/)
- # Valkyrie frontend rebuild - Stage 1
+# Valkyrie Frontend Rebuild — Stage 4
 
-這是一個「純前端重寫」原型，不包含 NES CPU/PPU 模擬器。
+這是一個**純前端重寫原型**，不是 NES 模擬器，也不在成品中執行 6502/PPU/MMC3。地圖、CHR 圖像與遊戲規則來自 v94 逆向工程成果，再以 JavaScript/Canvas 重寫。
 
-## 已完成
-- 使用 v94 逆向工程的 Title PPU script 重建標題畫面
-- 使用四層 world hierarchy 即時解析 4096x5120 世界地圖
-- 使用原始 CHR 圖塊與 palette class 繪製起始區域（World Group A / Day）
-- 原作新遊戲起始鏡頭 ($0100,$0800)，角色固定在畫面 ($78,$57)
-- 方向鍵/WASD 一像素移動、鏡頭捲動（F2 可開除錯資訊）
-- 使用原作 collision probe 位置與 tile >= $60 的第一階段碰撞門檻
-- 一隻 Tatta 樣板敵人：使用原作 metasprite $0A/$0B，簡化追蹤/地形 rollback
-- 手機觸控方向鍵
+## 操作
 
-## 執行
-直接雙擊 `index.html` 即可。若瀏覽器的本機檔案政策特別嚴，可用任意靜態 HTTP server 開啟。
+- 方向鍵 / WASD：移動
+- Z / J / Space：攻擊
+- Enter：開始；死亡後重新開始
+- R：回標題
+- F2：顯示除錯資訊
+- F3：依序在玩家附近生成 Robotian → Koakuman → Sochikisu → Zouna → Shizasu，方便測試射擊系統
+- 手機：方向鍵 + `B ATTACK`，控制區持續封鎖文字選取、context menu 與長按 callout
 
-## 尚未做（刻意留到下一階段）
-- 特殊地形 $D0-$FF 的 dispatch 與橋/門/商店/旅館/地城事件
-- World Group B / 日夜切換與 runtime terrain patch
-- 真正 encounter/fixed-object spawn 系統
-- 戰鬥、武器、HP/MP、掉落
-- WebAudio 音樂/音效
-- 完整 Title -> Character Setup -> Game Init 狀態機（目前 Enter 直接進新遊戲）
+## Stage 4 新增
 
-## 注意
-圖像資料由使用者提供的逆向工程/參考 ROM 在本地萃取，這個資料夾是為本次復刻測試生成。
+- 加入 `ACTOR_PROJECTILE` 與 `ACTOR_ZOUNA_PROJECTILE` 的純前端重建。
+- 飛行道具和敵人共用原作的 6 個 actor slot；沒有空 slot 時發射會自然失敗，不另開隱藏陣列。
+- 出生位置沿用原作：射手 world X + 4px，Y 不變，並繼承射手 CombatRecord，因此碰撞傷害直接使用射手 Power。
+- 發射方向取射手對玩家的 desired direction；八方向每 actor update 移動 2px。
+- 飛行道具使用原作 actor viewport：X `0..247`、Y `0..191`，離開即釋放 slot。
+- 玩家身體碰到 projectile 時扣射手 Power，projectile 轉為 `$1B` impact metasprite，8 update 後釋放。
+- 攻擊起始幀的方向型 sword hitbox 可以砍掉 projectile；若 projectile 正好和玩家身體重疊，active sword 也會優先把它切掉。
+- 普通 projectile 使用 metasprite `$31`；Zouna projectile 以 `$41/$42` 每 4 update 交替。
+- Robotian：22..85 update interval，在「瞄準玩家並發射」與「隨機四方向移動」之間交替，移動為 half cadence。
+- Koakuman：加入原作 tangential strafe、8-frame ±6px hover bob；HP≥25 時依原作 1/4 projectile gate 發射，並保留 poison branch 的第一版重建。
+- Sochikisu：58px proximity 內全速追蹤，外圍水平巡邏 half speed；HP≥65 才啟用 projectile gate。
+- Zouna：加入 256-tick teleport/visibility cycle、24px 八方向 teleport，以及 32-frame contact / projectile phase 交替。
+- Shizasu：保持 stationary turret 行為，每 16 update service，射擊 phase 採原作 3/4 gate，瞄準方向直接追玩家。
+- HUD 新增 `SHOT` 數量，方便看 6-slot actor pool 是否被 projectile 佔用。
 
+## 保留的 Stage 3 功能
+
+- Short Sword 傷害公式、complex sword metasprite、單幀 hit window。
+- 戰鬥 actor HP / Power / XP、40-frame hit reaction、knockback、死亡、XP、掉落與拾取。
+- 1/32 rare drop、Gold Bag 金額、原 actor slot 轉 item。
+- 世界 encounter cell、特殊地形 dispatch、surface / dungeon encounter lock。
+- 上下走路動畫修正與手機長按操作修正。
+
+## 仍未完成 / 有意延後
+
+- 音效目前還沒接，因此 projectile shot / impact 還是無聲版。
+- 固定世界 actor 掃描尚未完整重建，所以 Zouna / Shizasu 正式世界配置仍未全部自然出現；F3 是開發測試入口。
+- Koakuman poison、各敵人 body-contact cadence 已比 Stage 3 更貼近原作，但還沒有把完整 `ActorCombatKernel` 每個 return state 逐分支搬完。
+- 玩家 Helmet / Mantle 傷害減免、破損、完整 inventory/equipment 邏輯尚未接入。
+- 商店、飯店、固定寶箱、完整死亡 state、音樂與音效仍待後續階段。
+
+## 開啟方式
+
+直接開啟 `index.html` 即可。所有資產均為本地檔案，不需要伺服器。
