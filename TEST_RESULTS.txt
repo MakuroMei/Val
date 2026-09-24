@@ -1,0 +1,4 @@
+Stage 9 regression: PASS
+node --check app.js: PASS
+DOM id consistency: PASS (29 referenced / 0 missing)
+Chromium headless E2E: NOT RUN TO COMPLETION in this container; Chromium blocks on missing DBus/UPower services.
