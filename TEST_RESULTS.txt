@@ -1,4 +1,20 @@
-Stage 9 regression: PASS
-node --check app.js: PASS
-DOM id consistency: PASS (29 referenced / 0 missing)
-Chromium headless E2E: NOT RUN TO COMPLETION in this container; Chromium blocks on missing DBus/UPower services.
+Valkyrie Frontend Rebuild — Stage 13
+
+node tests/regression.mjs
+  Stage 13 regression: PASS
+
+node tests/audio_validation.mjs
+  Stage 13 audio validation: PASS (45 finite, 10 persistent)
+
+Stage 13 checks include:
+- quest-item one-frame action latch for Key / Gold Key / Soul / Tiara / Time Key
+- Swim deep-water early return
+- recovered Swim / Ship / Marco / Sink player metasprite selection
+- recovered terrain-event marker tile/palette pairs and blink phase
+- Lightning fixed-actor persistence clobber quirk
+- four ROM-free R2 player equipment atlases present and distinct
+- all Stage 7-12 regression assertions retained
+- 45 finite audio requests exact frame length
+- 10 persistent audio requests survive 20,000 ticks
+
+Chromium headless E2E: not claimed in this container because prior runs block on missing DBus/UPower services.
