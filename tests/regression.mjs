@@ -222,7 +222,171 @@ T.start(true);T.player.maxMp=240;T.player.mp=240;H.clearActors();T.actors[0]={ki
 // Four pre-rendered R2 atlases keep equipment graphics ROM-free at runtime.
 for(let i=0;i<4;i++)assert.ok(fs.existsSync(path.join(root,`assets/player_r2_${i}.png`)),`player R2 atlas ${i}`);assert.notDeepEqual(fs.readFileSync(path.join(root,'assets/player_r2_0.png')),fs.readFileSync(path.join(root,'assets/player_r2_3.png')));
 
-// Mobile corner menu exposes a movement-mode test helper for later phone testing.
-assert.match(html12,/data-action="move-mode"/);assert.match(html12,/S13 · 切換移動模式測試/);assert.match(html12,/Stage 13/);
+// Mobile corner menu preserves the Stage 13 movement-mode helper.
+assert.match(html12,/data-action="move-mode"/);assert.match(html12,/S13 · 切換移動模式測試/);
 
-console.log('Stage 13 regression: PASS');
+// Stage 14/15: retail combat actors have a strict ±12 anchor overlap body and contribute
+// the recovered previous-frame D-pad block mask instead of letting the player walk through them.
+function bodyActor(dx,dy,extra={}){return {kind:'combat',cls:4,rec:1,pal:0,x:T.camera.x+0x78+dx,y:T.camera.y+0x57+dy,dir:7,desired:7,timer:99,age:32,logicFrame:0,hp:8,maxHp:8,power:0,xp:1,hitTimer:0,deathTimer:0,aimedInterval:false,zounaTimer:0xFF,zounaVisible:true,flyChase:false,zuhlHasStolen:false,persistence:0xFF,fixed:false,...extra}}
+T.start(true);H.clearActors();T.actors[0]=bodyActor(10,0);T.updateActors();assert.equal(T.state.actorPlayerMoveBlockMask,0x80,'actor on player right blocks RIGHT');assert.equal(H.actorMovementBlocked(3),true);assert.equal(H.actorMovementBlocked(2),false);assert.equal(H.movementAllowed(3),true,'start tile permits right movement, isolating actor block');const bodyBlockCamX=T.camera.x;H.setHeldDirection(3);T.updatePlayer();assert.equal(T.camera.x,bodyBlockCamX,'player camera does not advance through overlapping actor');H.setHeldDirection(-1);
+H.clearActors();T.actors[0]=bodyActor(-10,0);T.updateActors();assert.equal(T.state.actorPlayerMoveBlockMask,0x40,'actor on player left blocks LEFT');
+H.clearActors();T.actors[0]=bodyActor(0,-10);T.updateActors();assert.equal(T.state.actorPlayerMoveBlockMask,0x10,'actor above player blocks UP');
+H.clearActors();T.actors[0]=bodyActor(0,10);T.updateActors();assert.equal(T.state.actorPlayerMoveBlockMask,0x20,'actor below player blocks DOWN');
+H.clearActors();T.actors[0]=bodyActor(10,10);T.updateActors();assert.equal(T.state.actorPlayerMoveBlockMask,0xA0,'lower-right diagonal blocks DOWN + RIGHT');
+H.clearActors();T.actors[0]=bodyActor(12,0);T.updateActors();assert.equal(T.state.actorPlayerMoveBlockMask,0,'strict edge at 12 px is not overlap');
+
+// Spawn animation has no body. Stage 15 corrects the earlier approximation: during the
+// first 8 knockback frames a hit enemy is still a solid overlapping actor, exactly like
+// ActorCombatKernel which applies knockback and then continues into the body-overlap path.
+H.clearActors();T.actors[0]=bodyActor(10,0,{age:0});T.updateActors();assert.equal(T.state.actorPlayerMoveBlockMask,0,'spawn phase does not block player');
+H.clearActors();T.actors[0]=bodyActor(4,0,{hitTimer:40,knockDir:0});const ky=T.actors[0].y;T.updateActors();assert.equal(T.actors[0].y,ky-6,'first hit-reaction frame applies recovered 6px knockback');assert.notEqual(T.state.actorPlayerMoveBlockMask,0,'knockback phase remains body-solid after displacement');
+H.clearActors();T.actors[0]=bodyActor(4,0,{hitTimer:32,knockDir:0});T.updateActors();assert.notEqual(T.state.actorPlayerMoveBlockMask,0,'late hit reaction remains body-solid');
+
+// Multiple overlapping actors OR their directional masks exactly like ActorPlayerMoveBlockMask.
+H.clearActors();T.actors[0]=bodyActor(10,0);T.actors[1]=bodyActor(0,-10);T.updateActors();assert.equal(T.state.actorPlayerMoveBlockMask,0x90,'right + above actors combine RIGHT + UP blocks');
+
+// Stage 15 actor dispatch now uses the retail viewport: X 0..247 and Y 0..191 only.
+T.start(true);H.clearActors();T.actors[0]={kind:'item',itemId:3,style:0,hidden:false,persistence:0xFF,pal:1,meta:0x30,x:T.camera.x+247,y:T.camera.y+191,age:32,logicFrame:0,goldAmount:0,fixed:false};T.updateActors();assert.ok(T.actors[0],'actor at 247,191 remains in retail viewport');
+H.clearActors();T.actors[0]={kind:'item',itemId:3,style:0,hidden:false,persistence:0xFF,pal:1,meta:0x30,x:T.camera.x+248,y:T.camera.y+100,age:32,logicFrame:0,goldAmount:0,fixed:false};T.updateActors();assert.equal(T.actors[0],null,'actor at X=248 is culled');
+H.clearActors();T.actors[0]={kind:'item',itemId:3,style:0,hidden:false,persistence:0xFF,pal:1,meta:0x30,x:T.camera.x+100,y:T.camera.y+192,age:32,logicFrame:0,goldAmount:0,fixed:false};T.updateActors();assert.equal(T.actors[0],null,'actor at Y=192 is culled');
+
+// Ground enemy rollback does not force an early retarget. Find a passable→solid one-pixel
+// boundary in the ROM hierarchy, point Tatta into it, and verify only the normal timer DEC occurs.
+let wallSpot=null;
+outer:for(let sy=16;sy<5100;sy+=8){for(let bx=16;bx<4080;bx+=8){const ax=bx-9,ay=sy-14;if(H.terrainPassableForActor(ax,ay)&&!H.terrainPassableForActor(ax+1,ay)){wallSpot={x:ax,y:ay};break outer}}}
+assert.ok(wallSpot,'found passable-to-solid actor terrain edge');T.camera.x=Math.max(0,wallSpot.x-100);T.camera.y=Math.max(0,wallSpot.y-80);H.clearActors();T.actors[0]={kind:'combat',cls:4,rec:1,pal:0,x:wallSpot.x,y:wallSpot.y,dir:3,desired:3,timer:50,age:32,logicFrame:0,hp:8,maxHp:8,power:0,xp:1,hitTimer:0,deathTimer:0,aimedInterval:false,zounaTimer:0xFF,zounaVisible:true,flyChase:false,zuhlHasStolen:false,persistence:0xFF,fixed:false};const wx0=T.actors[0].x;T.updateActors();assert.equal(T.actors[0].x,wx0,'Tatta rolls back at solid ROM terrain');assert.equal(T.actors[0].timer,49,'wall collision does not force retarget timer to 1');
+
+// Zouna's spawn timer finishes at 1 in retail, so its first active AI update immediately wraps
+// and teleports 24px toward the player instead of waiting a full 255-update cycle.
+T.start(true);H.clearActors();const px=T.camera.x+0x78,py=T.camera.y+0x57;T.actors[0]={kind:'combat',cls:10,rec:0x17,pal:0,x:px+48,y:py,dir:0,desired:0,timer:1,age:31,logicFrame:31,hp:120,maxHp:120,power:4,xp:1,hitTimer:0,deathTimer:0,aimedInterval:false,zounaTimer:0xFF,zounaVisible:true,flyChase:false,zuhlHasStolen:false,persistence:0xFF,fixed:false};const zx=T.actors[0].x;T.updateActors();assert.equal(T.actors[0].x,zx-24,'Zouna teleports on first active update');assert.equal(T.actors[0].zounaTimer,0xFF);
+
+// Spawn animation alternates the recovered $44/$43 metasprites every actor update.
+assert.equal(H.spawnFlashMeta(1),0x44);assert.equal(H.spawnFlashMeta(2),0x43);assert.equal(H.spawnFlashMeta(3),0x44);
+
+// Enemy HUD uses eight 32-HP segments with 4-HP partial steps, matching the recovered tile math.
+assert.deepEqual(Array.from(H.enemyHudSegments(64)),[8,8,0,0,0,0,0,0]);assert.deepEqual(Array.from(H.enemyHudSegments(36)),[8,1,0,0,0,0,0,0]);
+
+// Stage 16: desired-direction high nibble uses the retail screen dead zone exactly:
+// X=$70..$7F and Y=$4F..$5E are centered, not the older approximate ±6 helper.
+T.start(true);const center={x:T.camera.x+0x78,y:T.camera.y+0x57};
+let dirActor={x:center.x+7,y:center.y};assert.equal(H.updateDesiredDirection(dirActor),0,'+7px remains in retail horizontal dead zone');
+dirActor={x:center.x+8,y:center.y};assert.equal(H.updateDesiredDirection(dirActor),7,'+8px is west toward player');
+dirActor={x:center.x-8,y:center.y};assert.equal(H.updateDesiredDirection(dirActor),0,'-8px remains centered');
+dirActor={x:center.x-9,y:center.y};assert.equal(H.updateDesiredDirection(dirActor),3,'-9px is east toward player');
+dirActor={x:center.x,y:center.y+7};assert.equal(H.updateDesiredDirection(dirActor),0,'+7px Y remains centered');
+dirActor={x:center.x,y:center.y+8};assert.equal(H.updateDesiredDirection(dirActor),1,'+8px Y is north toward player');
+dirActor={x:center.x,y:center.y-9};assert.equal(H.updateDesiredDirection(dirActor),5,'-9px Y is south toward player');
+
+// ActorCombatKernel returns INTERACTION on body overlap. Most enemy AIs service animation /
+// contact cadence only on that result and do not continue movement or retarget timers.
+T.start(true);H.clearActors();T.actors[0]=bodyActor(10,0,{timer:50,dir:7,desired:7,logicFrame:0});const ix=T.actors[0].x;T.updateActors();assert.equal(T.actors[0].x,ix,'overlapping Tatta does not keep walking through player');assert.equal(T.actors[0].timer,50,'overlapping Tatta does not decrement movement timer');
+T.actors[0].x=center.x+20;T.updateActors();assert.equal(T.actors[0].timer,49,'Tatta timer resumes once body overlap ends');
+
+// Shared AI proximity box is strict < $3A per axis. Black Sandra stays idle at 58px,
+// but acquires at 57px and enters a randomized chase interval.
+T.start(true);H.clearActors();T.actors[0]=bodyActor(58,0,{cls:5,rec:8,timer:1,hp:40,maxHp:40});T.updateActors();assert.equal(T.actors[0].blackSandraIdle,true,'Black Sandra idles at exact 58px boundary');assert.equal(T.actors[0].timer,1);
+H.clearActors();T.actors[0]=bodyActor(57,0,{cls:5,rec:8,timer:1,hp:40,maxHp:40});T.updateActors();assert.notEqual(T.actors[0].blackSandraIdle,true,'Black Sandra acquires strictly inside 58px box');assert.ok(T.actors[0].timer>=0x16&&T.actors[0].timer<=0x55);
+
+// Star Flute locks AI after the kernel's single ActorFrame increment. The previous frontend
+// accidentally incremented the actor clock twice while frozen.
+T.start(true);T.player.maxMp=240;T.player.mp=240;H.clearActors();T.actors[0]=bodyActor(50,0,{logicFrame:10,timer:50});T.castSpell(5);T.updateActors();assert.equal(T.actors[0].logicFrame,11,'Star Flute advances actor frame exactly once per update');
+
+// Shizasu is the exception: COMBAT_RESULT_LOCKED still services its 16-frame contact cadence.
+T.start(true);H.clearActors();T.player.hp=64;H.setRng(0);T.actors[0]=bodyActor(10,0,{cls:15,rec:0x26,logicFrame:15,hitTimer:10,power:4,hp:80,maxHp:80});T.updateActors();assert.equal(T.player.hp,60,'locked Shizasu can still apply overlap damage on its cadence');
+
+// Robotian's aimed interval intentionally ignores Invisibility in retail. It tracks the
+// kernel desired direction and fires anyway; only its alternating random interval is random.
+T.start(true);T.player.maxMp=240;T.player.mp=240;T.castSpell(4);H.clearActors();T.actors[0]=bodyActor(40,0,{cls:9,rec:0x0C,timer:1,aimedInterval:false,power:3,hp:80,maxHp:80,dir:1,desired:1});T.updateActors();assert.equal(T.actors[0].dir,7,'Robotian aimed interval tracks player even while invisible');assert.ok(T.actors.some((a,i)=>i!==0&&a&&a.kind==='projectile'),'Robotian aimed interval still fires while invisible');
+
+// There is deliberately no enemy-vs-enemy body solver: retail only builds actor→player
+// overlap/block state, so enemies may overlap each other. Stage 16 does not invent physics.
+
+// Mobile corner menu preserves the Stage 16 combat-lock helper.
+assert.match(html12,/data-action="collision-test"/);assert.match(html12,/S16 · 包圍碰撞測試/);
+
+// Stage 17: common combat spawns begin with retail motion state 0, a $20 spawn timer,
+// and no body collision while the $44/$43 spawn flash is still active.
+T.start(true);H.clearActors();let p17={x:T.camera.x+0x78,y:T.camera.y+0x57};
+assert.equal(H.initActorFromSpawnToken(0x80|0x12,p17.x+48,p17.y),true);let ko=T.actors.find(a=>a&&a.kind==='combat');
+assert.equal(ko.cls,6,'record $12 is Koakuman');assert.equal(ko.dir,0,'common enemy current motion state starts at 0');assert.equal(ko.desired,0);assert.equal(ko.timer,0x20);assert.equal(ko.age,0);
+T.updateActors();assert.equal(ko.age,1);assert.equal(ko.timer,0x1F);assert.equal(T.state.actorPlayerMoveBlockMask,0,'spawn flash has no player body block');
+for(let i=1;i<31;i++)T.updateActors();assert.equal(ko.age,31);assert.equal(ko.timer,1);
+T.updateActors();assert.equal(ko.age,32);assert.ok(ko.timer>=0x16&&ko.timer<=0x55,'Koakuman immediately consumes spawn-finish timer=1 and chooses first retarget interval');assert.ok([1,3,5,7].includes(ko.dir),'Koakuman first retarget resolves to a cardinal strafe direction');
+
+// Sochikisu is the recovered class exception: it spawns already facing east ($03).
+H.clearActors();assert.equal(H.initActorFromSpawnToken(0x80|0x22,p17.x+48,p17.y),true);let s17so=T.actors.find(a=>a&&a.kind==='combat');assert.equal(s17so.cls,8,'record $22 is Sochikisu');assert.equal(s17so.dir,3);assert.equal(s17so.timer,0x20);
+
+// Retail HP subtraction detects death on 16-bit underflow, not exact zero. Exact lethal
+// damage leaves HP at 0 until a later positive damage event underflows the high byte.
+T.start(true);H.setHeldDirection(-1);T.player.hp=4;T.player.maxHp=64;assert.equal(H.subtractPlayerHpRetail(4),4);assert.equal(T.player.hp,0);assert.equal(T.player.hpUnderflow,false);T.updatePlayer();assert.equal(T.player.dead,false,'exact-zero HP is still alive in retail quirk');
+H.subtractPlayerHpRetail(1);assert.equal(T.player.hpUnderflow,true);T.updatePlayer();assert.equal(T.player.dead,true,'next positive damage underflows and starts death');assert.equal(T.state.deathState,'sequence');
+
+// Shared enemy projectile spawn aims from the freshly computed desired direction rather
+// than inheriting a stale current movement direction. This locks the FAA3 helper behavior.
+T.start(true);H.clearActors();p17={x:T.camera.x+0x78,y:T.camera.y+0x57};const shooter={kind:'combat',rec:0x0C,power:7,x:p17.x+40,y:p17.y,dir:3,desired:3};assert.equal(H.spawnEnemyProjectile(shooter,false),true);const shot=T.actors.find(a=>a&&a.kind==='projectile');assert.ok(shot);assert.equal(shot.dir,7,'projectile aims west toward player although shooter current direction was east');assert.equal(shooter.dir,3,'parent current direction remains unchanged');
+
+// Stage 17 mobile menu exposes the spawn-timing stress helper.
+assert.match(html12,/data-action="spawn-timing"/);assert.match(html12,/S17 · 出生節奏測試/);
+
+// Stage 18: actor/contact damage has no invulnerability gate. HurtBlink is a 32-tick
+// visual palette sequence only, and additional hits while it is active do not restart it.
+T.start(true);T.player.hp=64;T.player.hurtBlink=0;assert.equal(H.damageFromActorPower(4,'TEST'),4);assert.equal(T.player.hp,60);assert.equal(T.player.hurtBlink,32);
+T.player.hurtBlink=17;assert.equal(H.damageFromActorPower(3,'TEST'),3);assert.equal(T.player.hp,57,'second hit still damages during hurt flash');assert.equal(T.player.hurtBlink,17,'repeat hit does not restart retail HurtBlinkTimer');
+T.player.hurtBlink=25;assert.equal(H.hurtBlinkPaletteActive(),false,'elapsed 7 still normal palette');T.player.hurtBlink=24;assert.equal(H.hurtBlinkPaletteActive(),true,'elapsed 8 enters palette-3 phase');assert.equal(H.playerRenderPalette(),3);T.player.hurtBlink=20;assert.equal(H.hurtBlinkPaletteActive(),false,'elapsed 12 restores normal palette');
+
+// Hit reaction completion and death-start are separate actor updates in retail.
+T.start(true);H.clearActors();T.actors[0]=bodyActor(30,0,{hp:0,maxHp:8,hitTimer:1,deathTimer:0,power:0});T.updateActors();assert.equal(T.actors[0].hitTimer,0);assert.equal(T.actors[0].deathTimer,0,'hit reaction finish tick does not start death animation');T.updateActors();assert.equal(T.actors[0].deathTimer,8,'following actor update starts the $1B death sequence');
+
+// Mobile menu exposes the Stage 18 contact cadence / hurt-flash stress helper.
+assert.match(html12,/data-action="contact-timing"/);assert.match(html12,/S18 · 接觸傷害節奏測試/);
+
+// Stage 19: retail Gold additions saturate at exactly 60000, including Gold Bag pickup.
+T.start(true);T.player.gold=59995;assert.equal(H.addGoldRetail(10),5);assert.equal(T.player.gold,60000);assert.equal(H.addGoldRetail(99),0);assert.equal(T.player.gold,60000);
+T.start(true);T.player.gold=59995;H.clearActors();const p19={x:T.camera.x+0x78,y:T.camera.y+0x57};T.actors[0]={kind:'item',itemId:0x1C,style:0,hidden:false,persistence:0xFF,pal:0,meta:0x44,x:p19.x+8,y:p19.y,age:32,logicFrame:0,goldAmount:10,fixed:false};T.updateActors();assert.equal(T.player.gold,60000,'Gold Bag pickup obeys retail cap');assert.equal(T.actors[0],null,'picked Gold Bag frees actor slot');
+
+// Projectile sword collision is deliberately broader than combat-enemy collision: retail
+// uses TestActorPlayerBox(2) but skips SwordHitFacingArcTable. A shot behind the player
+// can therefore be cut if it is still strictly inside the directional sword rectangle.
+T.start(true);H.clearActors();H.setFacing(3);H.setAttackHitActive(true);assert.equal(H.swordRectOverlapsPoint(p19.x-15,p19.y),true);assert.equal(H.swordBoxOverlapsPoint(p19.x-15,p19.y),false,'combat actor facing arc would reject the same behind-player point');T.actors[0]={kind:'projectile',projectileType:'normal',cls:12,rec:0x0C,pal:1,x:p19.x-15,y:p19.y,dir:7,desired:7,age:0,logicFrame:0,power:1,impactTimer:0,meta:0x31};T.updateActors();assert.equal(T.actors[0].impactTimer,8,'projectile uses sword rectangle without combat facing arc');
+
+// Stage 19 mobile helper exposes the drop/Gold/projectile stress setup.
+assert.match(html12,/data-action="drop-lifecycle"/);assert.match(html12,/S19 · 掉落 \/ Gold \/ 子彈判定測試/);
+
+// Stage 20: hidden fixed items are visually hidden only. Retail Actor_ItemPickup checks
+// the body box before presentation flags, so exact-location blind pickup works without
+// True Sight. A full inventory still leaves the actor untouched/nonmutating.
+T.start(true);H.clearActors();const p20={x:T.camera.x+0x78,y:T.camera.y+0x57};const before20=T.player.inventory.filter(x=>x.id).length;
+T.actors[0]={kind:'item',itemId:0x03,style:1,hidden:true,persistence:0xFF,pal:0,meta:0x44,x:p20.x+8,y:p20.y,age:32,logicFrame:0,goldAmount:0,fixed:false};
+T.updateActors();assert.equal(T.actors[0],null,'hidden item can be blind-picked without True Sight');assert.equal(T.player.inventory.filter(x=>x.id).length,before20+1);assert.ok(H.hasInventoryItem(0x03));
+
+T.start(true);T.grantStage8TestKit();H.clearActors();assert.equal(T.player.inventory.filter(x=>x.id).length,8,'precondition: full inventory');
+T.actors[0]={kind:'item',itemId:0x03,style:1,hidden:true,persistence:0xFF,pal:0,meta:0x44,x:T.camera.x+0x78+8,y:T.camera.y+0x57,age:32,logicFrame:0,goldAmount:0,fixed:false};
+T.updateActors();assert.ok(T.actors[0]&&T.actors[0].hidden,'full inventory leaves hidden pickup in-place');assert.equal(T.player.inventory.filter(x=>x.id).length,8);
+
+// Retail actor rendering alternates queue order by FrameCounter parity. This only affects
+// overlap priority; actor update order remains slot 0..5.
+H.setFrameCounter(0);assert.deepEqual(Array.from(H.actorRenderOrder()),[0,1,2,3,4,5]);H.setFrameCounter(1);assert.deepEqual(Array.from(H.actorRenderOrder()),[5,4,3,2,1,0]);
+
+// Stage 20 mobile helper exposes hidden-pickup / overlap-priority behavior.
+assert.match(html12,/data-action="hidden-render"/);assert.match(html12,/S20 · 隱藏拾取 \/ 重疊顯示測試/);
+
+// Stage 21 BIG UPDATE: entering a recovered interior is now a real GameMode transition.
+T.start(true);T.player.gold=5000;assert.equal(T.beginInterior('shop'),true);assert.equal(T.state.gameMode,'ENTER_INTERIOR');
+for(let i=0;i<33;i++)T.update();assert.equal(T.state.gameMode,'INTERIOR');assert.equal(T.state.interior.type,'shop');assert.equal(T.state.interior.x,0xD0);assert.equal(T.state.interior.y,0xA0);
+
+// The six recovered shelf zones resolve through the selected world-X shop profile and B buys.
+H.setInteriorPos(0x58,0x50);const shelf21=T.shopShelfSelection();assert.ok(shelf21);assert.equal(shelf21.index,0);const inv21=T.player.inventory.filter(x=>x.id).length,gold21=T.player.gold;H.setPressed('Space');T.update();assert.equal(T.player.inventory.filter(x=>x.id).length,inv21+1);assert.equal(T.player.gold,gold21-shelf21.price);
+
+// Left-side shop service zone enters the dedicated transaction GameMode; A cancels.
+H.setInteriorPos(0x20,0x70);assert.equal(H.beginShopTransaction(),true);assert.equal(T.state.gameMode,'SHOP_TRANSACTION');H.setPressed('KeyX');T.update();assert.equal(T.state.gameMode,'INTERIOR');
+
+// Retail right-door coordinate hands off through a 256px leave stream plus four stable frames.
+H.setInteriorPos(0xC8,0x35);H.setHeldDirection(0);T.update();assert.equal(T.state.gameMode,'LEAVE_INTERIOR');H.setHeldDirection(-1);for(let i=0;i<37;i++)T.update();assert.equal(T.state.gameMode,'GAMEPLAY');
+
+// Hotel bed is spatial, automatic service: poison 20G, MP 20G, then 1G per missing HP,
+// followed by a local checkpoint when the sequence ends.
+T.start(true);T.player.gold=100;T.player.poison=true;T.player.mp=0;T.player.maxMp=32;T.player.hp=60;T.player.maxHp=64;assert.equal(T.beginInterior('hotel'),true);for(let i=0;i<33;i++)T.update();assert.equal(T.state.gameMode,'INTERIOR');H.setInteriorPos(0x40,0x80);for(let i=0;i<24;i++)T.update();assert.equal(T.player.poison,false);assert.equal(T.player.mp,32);assert.equal(T.player.hp,64);assert.equal(T.player.gold,56);assert.equal(T.state.interior.restActive,false);
+
+// Mobile UI now exposes A ACTION and the two DEV shortcuts enter the physical interiors.
+assert.match(html12,/data-key="KeyX">A<br>ACTION/);assert.match(html12,/S21 · 進入實體商店/);assert.match(html12,/S21 · 進入實體旅館/);assert.match(html12,/Stage 21 BIG UPDATE/);
+console.log('Stage 21 regression: PASS');
