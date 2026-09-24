@@ -1,7 +1,395 @@
-# Valkyrie Frontend Rebuild — Stage 13
+# Valkyrie Frontend Rebuild — Stage 21 BIG UPDATE
 
 純 HTML / Canvas / JavaScript 的前端復刻。成品不執行 `.nes` ROM，也不是 NES 模擬器。
 
+## Stage 21：真正的 Shop / Hotel Interior + GameMode transition
+
+Stage 20 以前商店與旅館的交易規則已經存在，但呈現方式仍然是前端 HTML panel。Stage 21 把這一層整個拆掉重做：踩到原作 `$D5/$D6/$D7` 入口後，現在會進入真正的遊戲內室內場景，而不是跳出網頁介面。
+
+### ROM-free Interior graphics
+
+這版新增 `assets/interior_tiles.png`。它在開發時依 v94 recovered CHR config 5 與 InteriorPalette 從使用者提供的參考資料預先萃取，成品只留下 PNG atlas，**ZIP 內仍沒有 `.nes` ROM**。
+
+Shop 與 Hotel 的背景則直接沿用四層 world hierarchy：
+
+- Shop：recovered interior world region `$0A00`
+- Hotel：recovered interior world region `$0AC0`
+
+所以室內不是手畫仿製圖，而是純前端重新解讀 recovered world data + baked CHR atlas。
+
+### 正式 GameMode 子流程
+
+Stage 21 新增實際運作的五個 gameplay mode：
+
+- `GAMEPLAY`
+- `ENTER_INTERIOR`
+- `INTERIOR`
+- `SHOP_TRANSACTION`
+- `LEAVE_INTERIOR`
+
+進店與離店不再瞬移。轉場依 recovered 流程每 update 推進 **8px**，完整跨越 **256px**；離店後另外保留 **4 stable frames** 再回 Gameplay。
+
+### Shop：可走動、6 貨架、賣物區、出口
+
+玩家進店後出現在 recovered 座標 `($D0,$A0)`，室內移動限制與主要 collision edge 已接回：
+
+- 六個貨架：X `$58-$B7`、Y `< $60`
+- 站在貨架前按 **B** 購買目前商品
+- 商品 profile 仍依世界 X-high 選擇原作四種 shop profile
+- 左側 `X < $38` 區域按 **A** 進入 `SHOP_TRANSACTION`
+- Sell mode 用左右選 slot、B 賣出、A 取消
+- 右側門 `X $C8-$D7 / Y $35` 往上走正式離店
+- 買價 `unit ×16`、賣價 `unit ×8`、Gold cap 60000 等 Stage 8/19 economy 規則全部沿用
+
+### Hotel：走進床鋪才真正休息
+
+Hotel 不再是一顆「REST」按鈕。玩家必須走進 recovered bed rectangle：
+
+`X $38-$57 / Y $74-$8F`
+
+進入後角色被固定在 `($48,$81)`，每隔一個 video frame 執行一次 bed service phase：
+
+1. 先嘗試一級 Level Up；成功就留在床上，下個 even phase 再從 Level Up 開始。
+2. Poison cure：20 Gold。付不起就保留毒，繼續檢查後面的服務。
+3. MP restore：20 Gold，一次補滿。付不起則跳過。
+4. HP restore：每個 service tick 1 Gold = 1 HP。
+5. 沒有可執行服務後，依玩家 facing 被推出床鋪 rectangle，並建立本機 checkpoint。
+
+Hotel 畫面會直接顯示目前 retail password，世界時鐘在室內仍然繼續前進。
+
+### 手機控制：新增 A ACTION
+
+手機底部現在是：
+
+- 滑動 D-pad
+- **A ACTION**：商店賣物區 / 取消 transaction 等互動
+- **B ATTACK**：世界攻擊；商店裡作為 Buy / Sell
+
+小螢幕下 A/B 會縮成 62px，避免三組控制器橫向爆版。
+
+鍵盤對應：
+
+- A：`X / K / Enter`
+- B：`Z / J / Space`
+
+右上角選單的「開商店／旅館測試」也改成直接走新的實體 Interior flow，不再開舊 HTML service panel。
+
+### Stage 21 regression
+
+在 Stage 7～20 regression 上新增：
+
+- `GAMEPLAY → ENTER_INTERIOR → INTERIOR` 33-update handoff
+- Shop 初始座標 `$D0,$A0`
+- recovered shelf zone / profile / B-buy integration
+- left-side `SHOP_TRANSACTION` 與 A cancel
+- right-door leave trigger
+- 256px leave stream + 4-frame settle → `GAMEPLAY`
+- Hotel spatial bed trigger
+- Poison 20G → MP 20G → HP 1G/HP 的 service chain
+- bed sequence 完成後 checkpoint 與狀態恢復
+- 手機 A ACTION 與 Stage 21 Interior 測試入口存在
+
+Stage 10 audio validation 仍保留：45 個有限 request 長度核對、10 個 persistent request 各 20,000 frames。
+
+---
+## Stage 20：Hidden pickup + actor render priority fidelity
+
+這一版繼續收斂 actor / item lifecycle，修的是「看起來像小細節、實際會改玩法」的兩個 retail 行為。
+
+### 隱藏物品不是 True Sight 鎖
+
+重新逐指令對照 v94 的 `Actor_ItemPickup` 後確認：原版先做玩家與 item actor 的 strict `< 12px` body-box 判定，**命中後直接進獎勵流程**；hidden flag 只在「沒有撿到」時決定該 actor 顯示隱藏 metasprite 還是正常 item metasprite。
+
+Stage 20 因此改回：
+
+- hidden item 即使尚未被 True Sight 揭露，只要玩家知道位置並踩進 pickup box，仍然可以直接撿走；
+- True Sight 的作用是清掉「目前已生成 actor」的 hidden presentation bit，讓物品可見，不是授權拾取；
+- 背包滿時 `AddInventoryItem` 仍是 non-mutating failure，hidden item 保留在原地，不會被吞掉；
+- Gold Bag 仍走 direct-currency path，不進背包。
+
+這會讓原作那些「知道秘密位置就能摸黑拿」的玩法重新成立。👻
+
+### 重疊 actor 每幀交替 sprite priority
+
+原版 actor update 永遠照 slot 0→5 跑，但 render queue 的建立順序會依 `FrameCounter & 1` 交替：
+
+- 偶數 frame：slot `0 → 5`
+- 奇數 frame：slot `5 → 0`
+
+Stage 20 把這個視覺規則補回來。它**不改 AI、不改碰撞、不改 actor update order**，只改多個敵人／掉落重疊時誰最後畫在上面，因此會產生原版那種交替 priority / flicker，而不是永遠固定某一隻蓋住其他 actor。
+
+### 手機測試入口
+
+`☰ → S20 · 隱藏拾取 / 重疊顯示測試` 會：
+
+- 在玩家 pickup box 裡放一個仍帶 hidden flag 的 Potion，不施放 True Sight 也應立即被撿起；
+- 在旁邊疊兩隻 Tatta，方便觀察每幀 render priority 交替。
+
+### Stage 20 regression
+
+新增驗證：
+
+- hidden item 無 True Sight 仍可 blind-pickup；
+- full inventory 時 hidden item 不消失；
+- actor render order 偶數 frame 為 `0,1,2,3,4,5`；
+- 奇數 frame 為 `5,4,3,2,1,0`；
+- 手機 Stage 20 測試入口存在。
+
+Stage 7～19 regression 與 Stage 10 audio validation 全部保留。
+
+---
+
+## Stage 18：Combat damage feedback fidelity / hurt flash + hit-to-death timing
+
+這一版繼續校正近身戰鬥手感，但重點從「敵人怎麼卡住玩家」轉到「玩家受傷與敵人死亡時，畫面節奏到底怎麼回饋」。重新逐指令對照 v94 的 `DamagePlayerFromActor`、`UpdatePlayerEffectsAndWeaponPower` 與 `ActorCombatKernel` 後，修正兩個早期前端一直存在的近似行為。
+
+### HurtBlink 不是受傷無敵幀
+
+原作 `WORLDFLAG_PLAYER_HURT_BLINK` **只控制視覺 palette flash**，完全不會阻擋下一次 actor/projectile damage。Stage 18 因此改回：
+
+- 第一次 actor/contact hit 啟動 32-tick HurtBlink；
+- 閃爍期間再次被命中仍會照敵人自己的 contact cadence 扣 HP；
+- 後續命中不會把 HurtBlinkTimer 重設成 0，32 tick 從第一次命中一路跑完；
+- 玩家不再每兩格直接整隻消失，改成 recovered palette phase：elapsed 8–11、16–19、24–27 使用 palette 3，其餘時間恢復正常玩家 palette；
+- Poison、Sink、Swim 等 raw hazard 仍不經過這條 actor-hurt flash path。
+
+也就是說，被兩三隻怪包住時，閃爍只是「你正在挨打」的視覺警告，不是保命護盾。
+
+### Hit reaction → death 多一個 retail update 邊界
+
+敵人被砍到 0 HP 後仍先完整跑 hit reaction。當 40-tick reaction 的 timer 結束時，原作那一個 actor update 只清除 `ACTORFLAG_HIT_REACTION`、恢復 palette 並繼續 overlap kernel；真正把 metasprite 切成 `$1B` death animation，是**下一次** actor update 的 `CombatKernel_CheckZeroHp`。
+
+Stage 17 前端會在 hit timer 歸 0 的同一幀直接啟動 death timer，快了一拍。Stage 18 已拆開這兩個狀態邊界。
+
+### 手機測試入口
+
+`☰ → S18 · 接觸傷害節奏測試` 會把一隻 Tatta 疊在玩家身上，重置 HP 與 HurtBlink，方便直接觀察：
+
+- contact damage 沒有 i-frame；
+- 傷害 cadence 與 32-tick palette flash 是兩套互不阻擋的時鐘；
+- F2 debug 文字會顯示 `HURT xx`，可直接看剩餘 flash tick。
+
+### Stage 18 regression
+
+新增驗證：
+
+- actor damage 第一次命中啟動 32-tick HurtBlink；
+- HurtBlink 期間第二次命中仍扣 HP，且不重置 timer；
+- recovered palette-3 phase 的 7/8/12 tick 邊界；
+- hit reaction timer 歸 0 當 update 尚未進 death；
+- 下一個 actor update 才啟動 8-update `$1B` death sequence；
+- 手機 Stage 18 contact-timing 測試入口存在。
+
+Stage 7～17 既有 regression 與 Stage 10 audio validation 全部保留。
+
+---
+
+## Stage 17：Combat kernel fidelity IV / spawn lifecycle + exact-zero HP
+
+這一版繼續校正 combat actor 的「出生第一秒」與玩家死亡判定。這些差異很小，但會改變敵人第一次接近玩家的方向與節奏。
+
+### Combat spawn motion state
+
+重新對照 v94 的 common combat spawn path 後，Stage 17 改回：
+
+- 一般 combat actor 出生時 `ActorMotionState = 0`，不再先抽一個亂數方向；
+- spawn timer 從 `$20` 開始，`$44/$43` 閃爍期間不參與 body block；
+- spawn 完成時 timer 進入 `1`，同一個 active update 直接交給 class AI；
+- Koakuman 因此會立刻做第一次 retarget，而不是沿著前端亂數初始方向多飛一段；
+- Sochikisu 保留原作 class-specific override，出生 current direction 固定為 `$03`（East）。
+
+手機 `☰ → S17 · 出生節奏測試` 會在玩家兩側生成 Koakuman 與 Sochikisu，方便直接觀察兩種出生行為。
+
+### Exact-zero HP underflow quirk
+
+原作玩家死亡不是單純判斷 `HP <= 0`。16-bit HP 做減法後，真正進入死亡流程的是 high byte 發生 underflow 的情況。Stage 17 因此保留這個怪癖：
+
+- HP 4 吃 4 傷害會變成 **0 HP，但當下仍活著**；
+- 下一次任何正傷害才造成 underflow，進入死亡 sequence。
+
+這不是現代遊戲常見的寫法，但它是 recovered retail 行為，所以復刻版不把它「修正常識」。
+
+### Enemy projectile shared spawner
+
+重新追 `SpawnEnemyProjectile` 後確認，shared spawner 會用最新的 desired direction 作為 projectile current direction，之後保留 parent 本身的 movement state。因此 Stage 16 已有的「即時朝玩家方向發射」其實是正確行為，Stage 17 不亂改，改成新增 regression 專門鎖住。
+
+### Stage 17 regression
+
+新增驗證：
+
+- Koakuman 出生 `dir=0 / timer=$20`；
+- spawn flash 期間沒有 player body block；
+- 第 32 次 actor update 立刻進第一次 Koakuman retarget；
+- Sochikisu 出生 current direction 固定 `$03`；
+- exact-zero HP 不死、下一次正傷害 underflow 才死亡；
+- projectile 使用 fresh desired direction，且不改寫 parent current direction；
+- 手機 Stage 17 spawn-timing 測試入口存在。
+
+Stage 7～16 的既有 regression 與 Stage 10 audio validation 全部保留。
+
+---
+
+## Stage 16：Combat kernel fidelity III / overlap interaction lock
+
+這一版繼續針對玩家實機最敏感的近身戰鬥手感，重新對照 v94 的 `ActorCombatKernel` 與各 enemy AI handler。Stage 14/15 已補回 actor→player body volume 與 movement block，但仍少了一層很重要的 retail 行為：**body overlap 不是只有阻擋玩家，它還會讓多數敵人 AI 當幀走 `COMBAT_RESULT_INTERACTION` 分支，跳過一般移動 / retarget。**
+
+### Overlap 時敵人不再繼續「穿著玩家走」
+
+Tatta、Black Sandra、Koakuman、Fly Drill、Sochikisu、Robotian 在與玩家嚴格 `< 12px` body overlap 時，現在會依原作跳過一般 movement/timer path，只服務各自的 animation / contact / projectile cadence。這讓卡位變成真正的接觸鎖，而不是只有玩家被擋、敵人本身仍持續位移。
+
+Zouna、Zuhl、Shizasu 保留各自的例外：
+
+- Zouna 的 `COMBAT_RESULT_INTERACTION` 仍繼續 teleport / visibility / attack cycle。
+- Zuhl overlap 時會執行偷竊後照原作繼續移動，方便逃走。
+- Shizasu 本來就不移動，但 interaction / locked result 有獨立攻擊 cadence。
+
+### 精確 player-centered direction dead zone
+
+`ComputeDesiredDirectionToPlayer` 已改用 recovered 畫面座標門檻，而不是舊版近似的 ±6：
+
+- X `$70..$7F` 視為水平置中；
+- Y `$4F..$5E` 視為垂直置中；
+- 置中時 desired direction 真的回到 `0`，不再保留上一個方向。
+
+這會影響追蹤、Zouna teleport、projectile facing、Koakuman strafe、Zuhl 追逃等細節，尤其玩家與敵人貼很近時差異最明顯。
+
+### Star Flute / Shizasu locked cadence 修正
+
+舊版 Star Flute branch 會讓 `logicFrame` 每 update 多加一次，等於凍結期間敵人的內部時鐘偷偷跑兩倍。Stage 16 已改回 kernel 每 update 只增加一次。
+
+Shizasu 是 retail 的特殊例外：即使 kernel 回傳 `COMBAT_RESULT_LOCKED`（包含 hit reaction / Star Flute lock），仍會在每 16 actor updates 的 cadence 上檢查 contact damage。這條路徑現在也補回來了。
+
+### Robotian Invisibility 例外
+
+Robotian 的 aimed interval 在 retail **不檢查 Invisibility**。前端之前會讓它在隱形期間改成亂數方向，現在修正為照 kernel desired direction 瞄準並發射；只有 alternating random-cardinal interval 才使用隨機方向。
+
+### Black Sandra idle animation
+
+Black Sandra 在 `$3A` proximity box 外保持原作 stationary idle，並恢復 `$0E/$0F/$10/$11` 四格 16-update idle cycle；進入追擊後才切回 directional metasprite。AI proximity 仍是 strict `< $3A`，剛好 58px 不算。
+
+### 沒有硬加 enemy-vs-enemy physics
+
+重新檢查 retail source 後確認，原作沒有一般 combat actor 彼此之間的 body solver。敵人可以互相重疊；`ActorPlayerMoveBlockMask` 只處理 actor→player 阻擋。因此 Stage 16 **刻意不加入敵人互推 / 互卡**，避免為了看起來更「物理」反而改壞原作手感。
+
+### Stage 16 regression
+
+新增驗證：
+
+- player-centered X/Y dead zone 的精確 `$70/$80/$4F/$5F` 邊界；
+- Tatta body overlap 時停止 movement / retarget timer；
+- 離開 overlap 後 timer 正常恢復；
+- Black Sandra strict 58px proximity boundary；
+- Star Flute actor clock 每 update 只前進一次；
+- Shizasu locked-contact cadence；
+- Robotian 隱形狀態下 aimed interval 仍追蹤玩家並開火；
+- 手機 `☰ → S16 · 包圍碰撞測試` 入口仍可直接壓測 block mask / interaction lock。
+
+Stage 7～15 的既有 regression 與 Stage 10 audio validation 仍全部保留。
+
+---
+
+## Stage 15：Combat kernel fidelity II / actor lifecycle polish
+
+這一版延續 Stage 14 的 enemy body collision，專門把幾個會明顯改變近身戰鬥手感的 recovered actor 行為修回原作。
+
+### Hit reaction 仍有實體
+
+Stage 14 曾把一般敵人受擊後前 8 個 6px knockback frames 當成暫時無實體。重新逐指令對照 `ActorCombatKernel` 後，retail 實際順序是：
+
+1. hit-reaction timer 減 1；
+2. timer bit `$20` 有效時套 `HitKnockbackDeltaTable` 的 6px 位移；
+3. **仍然繼續進 `CombatKernel_CheckPlayerOverlap`**；
+4. overlap 時照樣更新敵人 HUD 與 `ActorPlayerMoveBlockMask`。
+
+所以 Stage 15 改成整段 40-frame hit reaction 都保有 body collision。Shizasu 仍不吃一般 knockback，但同樣能參與 overlap。
+
+### Ground enemy terrain rollback 不再偷偷改 AI timer
+
+原作 `MoveActorOnePixel` 後的 `RollbackActorIfTerrainBlocked` 只把座標減回去，不會替 AI 提早 retarget。Stage 14 的 Tatta / Robotian 簡化邏輯在撞牆時會額外換方向或把 timer 壓回 1，造成牠們比原版更會「彈牆」。Stage 15 已移除這個前端自行加上的行為。
+
+Actor pathing 仍故意查 **ROM world hierarchy**，而不是玩家看到的 runtime terrain patch，保留原作「玩家碰撞讀 live nametable、敵人 pathing 讀原始世界資料」的分裂。
+
+### Retail actor viewport
+
+一般 actor 現在使用 recovered `DispatchActorClass` 的精確 cull 邊界：
+
+- `0 <= screenX < 248`
+- `0 <= screenY < 192`
+
+先前為了看起來平滑而保留的畫面外 margin 已移除。Projectile 原本就已使用這組邊界。
+
+### Zouna 首次 teleport timing
+
+Spawn animation 完成時 retail `ActorTimer` 會從 0 被 `INC` 成 1；Zouna 第一個 active update 隨即 `DEC` 到 0，立刻進入 24px teleport，再把 timer 設成 `$FF`。前端先前直接從 `$FF` 開始，會多等近一個完整 cycle。Stage 15 已修正。
+
+### Spawn flicker / enemy HUD
+
+- Combat spawn phase 改回 `$44 / $43` metasprite **每 actor update 交替**，而不是每 4 frame 隱藏一次。
+- 玩家與敵人 body overlap 時，HUD 改成 recovered 8 段 HP 表示：每段 32 HP、partial step 每 4 HP，並使用 `EnemyHudPortraitTilesByActorClass` 的雙 tile portrait。
+- 手機 `☰ → S15 · 包圍碰撞測試` 會在玩家四側放 4 隻無傷害 Tatta，方便直接測卡位、對角脫身與多方向 block-mask OR。
+
+### Stage 15 regression
+
+新增驗證：
+
+- knockback 6px 後仍產生 body block；
+- hit reaction 後段仍有 body；
+- actor viewport `$F8/$C0` 邊界；
+- Tatta 撞牆只 rollback，不強迫 retarget；
+- Zouna 第一次 active update 立即 teleport 24px；
+- spawn `$44/$43` 每 update 交替；
+- 8 段 enemy HP bar 的 32HP / 4HP partial 數學；
+- 手機 S15 collision stress 入口存在。
+
+Stage 7～14 的既有 regression 與 Stage 10 audio validation 仍全部保留。
+
+---
+
+## Stage 14：Enemy body collision / combat feel fidelity
+
+這一版優先修正玩家實機回饋中最影響戰鬥手感的問題：前端雖然已有接觸傷害與劍 hitbox，但 combat actor 沒有把原作的 **玩家移動阻擋體積**接回來，因此玩家可以直接穿過敵人。
+
+### 原作 ActorPlayerMoveBlockMask
+
+v94 的 `TestActorPlayerBox` / `CombatKernel_HandleBodyOverlap` 顯示，原版不是用一般矩形物理碰撞推開角色，而是：
+
+- combat actor 與玩家 anchor 的 X/Y 距離都必須 **嚴格小於 `$0C` (12 px)** 才算 body overlap；剛好 12 px 不算。
+- overlap 後依 actor 相對玩家的 8 方向，OR 進 `ActorPlayerMoveBlockMask`。
+- 對角位置會同時封兩個 D-pad 方向，例如右下方敵人會阻擋 Down + Right，但玩家仍可往左或往上脫身。
+- actor update 每幀重建這個 mask；Gameplay 的方向輸入在下一幀消費它，因此保留原版的一幀 pipeline 感。
+- Magic Rainbow 強制移動仍跳過一般 actor block。
+
+Stage 14 已把 recovered table `$F90D` 原樣搬回：
+
+`F0, 20, 60, 40, 50, 10, 90, 80, A0`
+
+對應 actor-to-player direction nibble `0..8`。
+
+### Spawn / hit-reaction 的碰撞時序
+
+敵人不是從出現第一幀就變成硬牆：
+
+- spawn animation 尚未完成時沒有 body blocking。
+- Stage 14 初版曾把一般敵人前 8 個 knockback frames 視為暫停 body blocking；Stage 15 重新逐指令核對後已更正：knockback 後仍會進 player-overlap path，因此整段 hit reaction 都有 body。
+- 40-frame hit reaction 的後段同樣維持 body blocking。
+- Shizasu 保留 retail 例外，不套一般 knockback-body suppression。
+- death / drop / projectile / item actor 不產生 combat body block。
+
+### Sword facing 也改吃 recovered actor direction
+
+劍的方向 arc 不再用前端早期的 ±6px 簡化方向判斷，而改用原作 `ComputeDesiredDirectionToPlayer` 的 screen dead-zone 邊界 (`X=$70..$7F`, `Y=$4F..$5E`) 判定 actor-to-player direction，再套 recovered `SwordHitFacingArcTable`。
+
+### F2 collision debug
+
+手機右上 `☰ → F2 · 除錯資訊 / Collision Boxes` 可直接看：
+
+- 綠框：玩家 body-overlap anchor 區
+- 黃框：可碰撞 combat actor
+- 紅框：目前與玩家 body overlap 的 combat actor
+- 藍框：攻擊起始幀有效的 sword extent
+- debug 文字 `BLK $xx`：目前保留給下一幀使用的 `ActorPlayerMoveBlockMask`
+
+這些框只在 debug mode 繪製，不影響遊戲規則。
 
 ## Stage 13：Player movement modes / quest-item latch / equipment CHR
 

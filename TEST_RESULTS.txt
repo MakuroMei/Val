@@ -1,20 +1,25 @@
-Valkyrie Frontend Rebuild — Stage 13
+Valkyrie Frontend Rebuild — Stage 21 BIG UPDATE
 
-node tests/regression.mjs
-  Stage 13 regression: PASS
+Stage 21 regression: PASS
+- Stage 7–20 regression coverage retained
+- GAMEPLAY → ENTER_INTERIOR → INTERIOR handoff: PASS
+- 256px enter stream at 8px/update: PASS
+- Recovered shop initial position $D0,$A0: PASS
+- Six-shelf zone + shop profile + B buy integration: PASS
+- SHOP_TRANSACTION + A cancel: PASS
+- Right-door leave trigger: PASS
+- 256px leave stream + 4 stable frames → GAMEPLAY: PASS
+- Hotel spatial bed trigger: PASS
+- Hotel service order (level / poison / MP / incremental HP): PASS
+- Hotel service result for 100G / poison / 0MP / 4HP missing → 56G: PASS
+- Mobile A ACTION + physical Shop/Hotel shortcuts: PASS
 
-node tests/audio_validation.mjs
-  Stage 13 audio validation: PASS (45 finite, 10 persistent)
+Stage 21 audio validation: PASS
+- 45 finite requests match recovered frame lengths
+- 10 persistent requests survive 20,000 frames each
 
-Stage 13 checks include:
-- quest-item one-frame action latch for Key / Gold Key / Soul / Tiara / Time Key
-- Swim deep-water early return
-- recovered Swim / Ship / Marco / Sink player metasprite selection
-- recovered terrain-event marker tile/palette pairs and blink phase
-- Lightning fixed-actor persistence clobber quirk
-- four ROM-free R2 player equipment atlases present and distinct
-- all Stage 7-12 regression assertions retained
-- 45 finite audio requests exact frame length
-- 10 persistent audio requests survive 20,000 ticks
+Browser headless E2E: NOT COUNTED
+- Chromium still times out in this container on DBus / UPower initialization.
+- No successful screenshot was produced, so this is not reported as a pass.
 
-Chromium headless E2E: not claimed in this container because prior runs block on missing DBus/UPower services.
+NES ROM files in deliverable: 0
