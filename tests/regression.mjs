@@ -68,8 +68,8 @@ T.camera.x=0x0A00;assert.equal(H.shopProfileForWorld(),2,'X-high $0A selects pro
 // Buying adds the item to the first free slot and subtracts exact buy price; selling clears it and returns half price.
 T.start(true);T.player.gold=1000;const beforeSlots=T.player.inventory.filter(x=>x.id).length;assert.equal(T.buyShopItem(0x07),true);assert.equal(T.player.gold,840);assert.equal(T.player.inventory.filter(x=>x.id).length,beforeSlots+1);const keySlot=T.player.inventory.findIndex(x=>x.id===0x07);assert.ok(keySlot>=0);assert.equal(T.sellInventorySlot(keySlot),true);assert.equal(T.player.gold,920);assert.equal(T.player.inventory[keySlot].id,0);
 
-// Save/load preserves durable game state but drops transient actors.
-T.start(true);T.player.gold=1234;T.player.hp=31;T.player.maxHp=96;T.camera.x=0x0B20;T.camera.y=0x0910;T.fixedState[5]=0x80;H.setPatch2x2(T.camera.x,T.camera.y,[1,2,3,4]);H.addInventoryItem(0x07);T.actors[0]={kind:'projectile',x:0,y:0};assert.equal(T.quickSave(),true);T.player.gold=1;T.player.hp=1;T.camera.x=0;T.fixedState[5]=0;T.terrainPatches.clear();assert.equal(T.quickLoad(),true);assert.equal(T.player.gold,1234);assert.equal(T.player.hp,31);assert.equal(T.player.maxHp,96);assert.equal(T.camera.x,0x0B20);assert.equal(T.fixedState[5],0x80);assert.ok(T.terrainPatches.size>=4);assert.equal(T.actors.filter(Boolean).length,0,'transient actors are intentionally not restored');
+// Save/load preserves durable game state but drops transient actors and Stage 24-correct live nametable patches.
+T.start(true);T.player.gold=1234;T.player.hp=31;T.player.maxHp=96;T.camera.x=0x0B20;T.camera.y=0x0910;T.fixedState[5]=0x80;H.setPatch2x2(T.camera.x,T.camera.y,[1,2,3,4]);H.addInventoryItem(0x07);T.actors[0]={kind:'projectile',x:0,y:0};assert.equal(T.quickSave(),true);T.player.gold=1;T.player.hp=1;T.camera.x=0;T.fixedState[5]=0;T.terrainPatches.clear();assert.equal(T.quickLoad(),true);assert.equal(T.player.gold,1234);assert.equal(T.player.hp,31);assert.equal(T.player.maxHp,96);assert.equal(T.camera.x,0x0B20);assert.equal(T.fixedState[5],0x80);assert.equal(T.terrainPatches.size,0,'VRAM-only terrain patches are intentionally not restored');assert.equal(T.actors.filter(Boolean).length,0,'transient actors are intentionally not restored');
 
 // Hotel net service order: poison 20G, MP full 20G, then HP 1G per point, followed by checkpoint save.
 T.start(true);T.player.gold=100;T.player.poison=true;T.player.mp=0;T.player.maxMp=32;T.player.hp=60;T.player.maxHp=64;const hotel=T.hotelRest();assert.equal(hotel.spent,44);assert.equal(T.player.gold,56);assert.equal(T.player.poison,false);assert.equal(T.player.mp,32);assert.equal(T.player.hp,64);assert.equal(hotel.saved,true);
@@ -388,5 +388,142 @@ H.setInteriorPos(0xC8,0x35);H.setHeldDirection(0);T.update();assert.equal(T.stat
 T.start(true);T.player.gold=100;T.player.poison=true;T.player.mp=0;T.player.maxMp=32;T.player.hp=60;T.player.maxHp=64;assert.equal(T.beginInterior('hotel'),true);for(let i=0;i<33;i++)T.update();assert.equal(T.state.gameMode,'INTERIOR');H.setInteriorPos(0x40,0x80);for(let i=0;i<24;i++)T.update();assert.equal(T.player.poison,false);assert.equal(T.player.mp,32);assert.equal(T.player.hp,64);assert.equal(T.player.gold,56);assert.equal(T.state.interior.restActive,false);
 
 // Mobile UI now exposes A ACTION and the two DEV shortcuts enter the physical interiors.
-assert.match(html12,/data-key="KeyX">A<br>ACTION/);assert.match(html12,/S21 · 進入實體商店/);assert.match(html12,/S21 · 進入實體旅館/);assert.match(html12,/Stage 21 BIG UPDATE/);
-console.log('Stage 21 regression: PASS');
+assert.match(html12,/data-key="KeyX">A<br>ACTION/);assert.match(html12,/S21 · 進入實體商店/);assert.match(html12,/S21 · 進入實體旅館/);
+
+// Stage 22 FRONT-END REBUILD: title is now a three-phase GameMode flow with a recovered
+// 240-update scroll-in. No gameplay actor state is needed for this phase.
+T.resetTitleFrontend(false);assert.equal(T.state.mode,'title');assert.equal(T.state.gameMode,'TITLE');assert.equal(T.state.front.phase,0);
+T.updateFrontend();assert.equal(T.state.front.phase,1);
+for(let i=0;i<239;i++)T.updateFrontend();assert.equal(T.state.front.titleScroll,239);assert.equal(T.state.front.phase,1);
+T.updateFrontend();assert.equal(T.state.front.titleScroll,240);assert.equal(T.state.front.phase,2,'title reaches interactive menu after 240 scroll updates');
+
+// SELECT-equivalent toggles New Game / Continue and START-equivalent enters character setup.
+const titlePick22=T.state.front.continueSelected;H.frontPress('KeyX');T.updateFrontend();assert.equal(T.state.front.continueSelected,!titlePick22);
+// Select NEW GAME deterministically for the character-setup path.
+if(T.state.front.continueSelected){H.frontPress('KeyX');T.updateFrontend()}
+H.frontPress('Enter');T.updateFrontend();assert.equal(T.state.gameMode,'CHARACTER_SETUP');assert.equal(T.state.front.mode,'CHARACTER_SETUP');
+T.updateFrontend();assert.equal(T.state.front.phase,1);
+H.frontPress('ArrowRight');T.updateFrontend();assert.equal(T.state.front.choices[0],1,'zodiac increments on right');
+H.frontPress('ArrowDown');T.updateFrontend();assert.equal(T.state.front.cursor,1);H.frontPress('ArrowLeft');T.updateFrontend();assert.equal(T.state.front.choices[1],3,'blood type wraps left');
+H.frontPress('ArrowDown');T.updateFrontend();assert.equal(T.state.front.cursor,2);H.frontPress('ArrowRight');T.updateFrontend();assert.equal(T.state.front.choices[2],1,'color increments on right');
+
+// Confirming new-game setup routes through the password/new-game handoff and then the
+// recovered 256px / 8px GAME_INIT stream before normal gameplay begins.
+H.frontPress('Enter');T.updateFrontend();assert.equal(T.state.gameMode,'PASSWORD_ENTRY');T.updateFrontend();assert.equal(T.state.gameMode,'GAME_INIT');assert.equal(T.state.gameInitProgress,0);
+for(let i=0;i<31;i++)T.update();assert.equal(T.state.gameMode,'GAME_INIT');assert.equal(T.state.gameInitProgress,248);T.update();assert.equal(T.state.gameMode,'GAMEPLAY');
+assert.equal(T.player.sign,1);assert.equal(T.player.blood,3);assert.equal(T.player.color,1,'character setup values survive into new game');
+
+// Continue without a local save enters the recovered 18-symbol password editor. A bad
+// password holds the error state for exactly 60 front-end ticks and the third reject
+// returns to the title flow.
+sandbox.localStorage._m.clear();T.resetTitleFrontend(true);assert.equal(T.state.front.phase,2);
+if(!T.state.front.continueSelected){H.frontPress('KeyX');T.updateFrontend()}
+H.frontPress('Enter');T.updateFrontend();assert.equal(T.state.gameMode,'CHARACTER_SETUP');T.updateFrontend();assert.equal(T.state.gameMode,'PASSWORD_ENTRY');T.updateFrontend();assert.equal(T.state.front.phase,1);
+for(let attempt=1;attempt<=3;attempt++){
+  H.setFrontPassword(Array(18).fill(0));H.frontPress('Enter');T.updateFrontend();assert.equal(T.state.front.phase,2);assert.equal(T.state.front.passwordFailures,attempt);
+  for(let i=0;i<59;i++)T.updateFrontend();assert.equal(T.state.front.phase,2,'password error delay remains active through tick 59');
+  T.updateFrontend();
+  if(attempt<3){assert.equal(T.state.front.phase,0);T.updateFrontend();assert.equal(T.state.front.phase,1,'password editor redraws after reject')}else{assert.equal(T.state.gameMode,'TITLE');assert.equal(T.state.front.mode,'TITLE','third reject returns to title')}
+}
+
+// Attract starts after 10 completed title-idle seconds, performs the recovered 256px
+// stream, and exits when its world clock reaches 60 seconds.
+T.resetTitleFrontend(true);for(let i=0;i<600;i++)T.updateFrontend();assert.equal(T.state.gameMode,'ATTRACT_DEMO');assert.equal(T.state.front.mode,'ATTRACT');
+T.updateFrontend();assert.equal(T.state.front.phase,1);for(let i=0;i<32;i++)T.updateFrontend();assert.equal(T.state.front.phase,2);assert.equal(T.state.front.attractStream,256);
+H.setWorldClock(59);T.updateFrontend();assert.equal(T.state.gameMode,'TITLE');assert.equal(T.state.front.phase,0,'attract timeout returns to the title build/scroll flow');
+
+// Stage 22 mobile/front-end surfaces are present in the actual HTML.
+assert.match(html12,/ACTION\/SELECT/);assert.match(html12,/ATTACK\/START/);assert.match(html12,/data-action="frontend-test"/);assert.match(html12,/S22 · 回前台互動標題/);assert.match(html12,/Stage 2\d/);
+console.log('Stage 7-22 legacy regression: PASS');
+
+// Stage 23 ITEM/SPELL MENU: recovered selector behavior and top-level GameMode.
+T.start(true);for(const slot of T.player.inventory){slot.id=0;slot.value=0}
+assert.equal(H.addInventoryItem(0x03),true);assert.equal(H.addInventoryItem(0x07),true);assert.equal(H.addInventoryItem(0x09),true);
+T.player.maxMp=160;T.player.mp=160;T.player.selectedSpell=0;
+assert.equal(H.highestUnlockedSpell(),5,'MaxMP 160 unlocks through Star Flute');
+assert.equal(T.beginItemSpellMenu(),true);assert.equal(T.state.gameMode,'ITEM_SPELL_MENU');
+const menuStart=T.state.itemSpellMenu.inventoryCursor;
+H.setPressed('ArrowRight');T.updateItemSpellMenu();assert.notEqual(T.state.itemSpellMenu.inventoryCursor,menuStart,'right moves inventory selector to next occupied slot');
+const afterRight=T.state.itemSpellMenu.inventoryCursor;H.setPressed('ArrowLeft');T.updateItemSpellMenu();assert.equal(T.state.itemSpellMenu.inventoryCursor,menuStart,'left wraps/skips back to occupied slot');
+H.setPressed('ArrowUp');T.updateItemSpellMenu();assert.equal(T.player.selectedSpell,1,'UP increments spell selector');
+H.setPressed('ArrowDown');T.updateItemSpellMenu();assert.equal(T.player.selectedSpell,0,'DOWN decrements/wraps spell selector');
+
+// A has priority and exits with a deferred spell cast; the next gameplay update consumes MP.
+T.player.selectedSpell=2;const mp23=T.player.mp;H.setPressed('KeyX');T.updateItemSpellMenu();assert.equal(T.state.gameMode,'GAMEPLAY');assert.equal(T.state.itemSpellMenu.pendingSpellCast,true);T.update();assert.equal(T.state.itemSpellMenu.pendingSpellCast,false);assert.equal(T.player.mp,mp23-5);assert.equal(T.spell.type,2,'deferred Fireball begins on gameplay update');T.spell.type=0;T.spell.timer=0;
+
+// B uses the selected item and exits. Cursor keeps retail slot identity even if it becomes empty.
+T.beginItemSpellMenu();let potionSlot=T.player.inventory.findIndex(x=>x.id===0x03);T.state.itemSpellMenu.inventoryCursor=potionSlot;T.player.hp=Math.max(1,T.player.maxHp-40);const hp23=T.player.hp;H.setPressed('Space');T.updateItemSpellMenu();assert.equal(T.state.gameMode,'GAMEPLAY');assert.ok(T.player.hp>hp23,'B uses selected Potion');assert.equal(T.player.inventory[potionSlot].id,0,'consumed slot becomes empty');
+
+// Menu cancel is a pure mode handoff with no item/spell action.
+T.beginItemSpellMenu();const mpCancel=T.player.mp;H.setPressed('KeyI');T.updateItemSpellMenu();assert.equal(T.state.gameMode,'GAMEPLAY');assert.equal(T.player.mp,mpCancel);
+
+// Same-frame arbitration: a gameplay menu request does not end the old handler. A later
+// death store therefore supersedes ITEM_SPELL_MENU, matching the recovered dispatcher semantics.
+T.start(true);T.player.hp=0;T.player.hpUnderflow=true;H.setPressed('KeyI');T.update();assert.equal(T.player.dead,true);assert.equal(T.state.gameMode,'DEATH','same-frame death overrides earlier menu request');
+
+// Death completion now exposes the recovered top-level GAME_OVER state rather than only a frontend flag.
+for(let i=0;i<400&&T.state.deathState!=='gameover';i++)T.updateDeathSequence();assert.equal(T.state.gameMode,'GAME_OVER');
+
+// Mobile/special corner menu now opens the in-canvas retail-style menu instead of the old HTML inventory panel.
+assert.match(html12,/data-action="inventory">🎒 ITEM \/ SPELL MENU/);assert.match(html12,/Stage 2\d/);
+console.log('Stage 23 regression: PASS');
+
+
+// Stage 24 PALETTE / STREAMING / OAM: exact recovered background family assets exist.
+for(const f of ['world_group_a.png','world_group_b.png','dungeon_palettes.png'])assert.ok(fs.existsSync(path.join(root,'assets',f)),`Stage24 asset ${f}`);
+assert.notDeepEqual(fs.readFileSync(path.join(root,'assets/world_group_a.png')),fs.readFileSync(path.join(root,'assets/world_group_b.png')),'A/B CHR+palette atlases differ');
+T.start(true);H.setWorldGraphicsGroup(0);H.setWorldClock(0x00);assert.equal(T.surfacePaletteFamily(),0);H.setWorldClock(0x10);assert.equal(T.surfacePaletteFamily(),1);H.setWorldClock(0x72);assert.equal(T.surfacePaletteFamily(),2);T.player.equipment.lamp=true;assert.equal(T.surfacePaletteFamily(),3,'surface Lamp selects dedicated recovered palette family');
+T.player.equipment.lamp=false;assert.equal(T.state.worldGraphicsGroup,0);T.runStage24VisualTest();assert.equal(T.state.worldGraphicsGroup,1,'S24 visual test flips A/B graphics group');
+
+// Runtime terrain mutation is nametable-local, not a persistent ROM edit/checkpoint field.
+T.start(true);T.runStage24VisualTest();assert.ok(T.terrainPatches.size>=4);const snap24=T.snapshotGame();assert.equal(Array.from(snap24.terrainPatches).length,0,'checkpoint omits transient live nametable mutations');T.camera.y+=216;T.serviceTerrainPatchStreaming();assert.equal(T.terrainPatches.size,0,'one recovered 27-tile vertical stream height overwrites live 2x2 terrain patches');
+
+// Recovered dynamic OAM budget is 30 hardware 8x16 sprites. Player/spell reserve first slots;
+// actor metasprites consume the rest, and component counts reflect simple/complex descriptors.
+assert.equal(T.metaComponentCount(0x44),1);assert.equal(T.metaComponentCount(0x01),2);assert.equal(T.metaComponentCount(0xD0),10);assert.equal(T.metaComponentCount(0xD1),4);
+T.start(true);assert.ok(T.playerOamComponentCount()>=1&&T.playerOamComponentCount()<=3);T.runStage24VisualTest();
+// drawWorld is exercised through the exposed render hook in the VM loop in browser; here the count math
+// locks the crucial allocation rule: six 4-component actors + player remain within 30, while six 10-component
+// rainbows cannot. The renderer truncates component-wise rather than dropping whole metasprites.
+const reserve=T.playerOamComponentCount()+T.spellOamComponentCount();assert.ok(reserve<30);assert.ok(6*T.metaComponentCount(0xD0)>30-reserve);
+assert.match(html12,/S24 · Palette \/ OAM \/ Patch 測試/);assert.match(html12,/Stage 24/);
+console.log('Stage 24 regression: PASS');
+
+// Stage 25 FLOW CONFORMANCE: MAP_TRANSITION is now the recovered three-phase mode.
+T.start(true);H.clearActors();T.encounterLocks.surface[0]=0x80;const p25old={x:T.camera.x,y:T.camera.y};T.terrainPatches.clear();T.terrainPatches.set('0,0',0x2C);
+// Use a real F7 warp trigger. The destination is applied immediately, but gameplay is
+// suspended behind phase 0/1/2 until 256px of 8px streaming + four HUD-stable ticks finish.
+aimAtTile([0xF7]);const oldActor={kind:'combat',cls:4,rec:1,pal:0,x:T.camera.x+100,y:T.camera.y+80,dir:0,desired:0,timer:20,age:32,logicFrame:0,hp:8,maxHp:8,power:0,xp:1,hitTimer:0,deathTimer:0,persistence:0xFF,fixed:false};T.actors[0]=oldActor;
+assert.equal(T.tryDirectionalWarp(),true);assert.equal(T.state.gameMode,'MAP_TRANSITION');assert.equal(T.state.modePhase,0);assert.equal(T.encounterLocks.surface[0],0x80,'warp does not globally clear encounter locks');assert.equal(T.actors[0],oldActor,'map transition does not eagerly clear actor pool');
+T.updateMapTransition();assert.equal(T.state.modePhase,1);assert.equal(T.state.mapTransition.pixelsRemaining,0);
+for(let i=0;i<31;i++)T.updateMapTransition();assert.equal(T.state.modePhase,1);assert.equal(T.state.mapTransition.pixelsRemaining,8,'after 31 stream ticks, 8px remain');
+T.updateMapTransition();assert.equal(T.state.modePhase,2);assert.equal(T.state.mapTransition.pixelsRemaining,0);assert.equal(T.state.mapTransition.hudSettle,1,'32nd stream tick falls through into first HUD settle tick');
+for(let i=0;i<2;i++)T.updateMapTransition();assert.equal(T.state.gameMode,'MAP_TRANSITION');T.updateMapTransition();assert.equal(T.state.gameMode,'GAMEPLAY');assert.equal(T.state.facing,1,'transition returns facing DOWN after four stable HUD ticks');
+
+// Dungeon entrance/exit terrain uses the same formal MAP_TRANSITION rather than an instant realm swap.
+T.start(true);const y25=T.camera.y;H.dispatchSpecialTerrain({tile:0xF9,wx:T.camera.x,wy:T.camera.y},1);assert.equal(T.camera.y,(y25+0x0A00)&0xFFF0);assert.equal(T.state.gameMode,'MAP_TRANSITION');for(let i=0;i<36;i++)T.update();assert.equal(T.state.gameMode,'GAMEPLAY');assert.equal(T.camera.y>=0x0A00,true);
+H.dispatchSpecialTerrain({tile:0xD4,wx:T.camera.x,wy:T.camera.y},0);assert.equal(T.state.gameMode,'MAP_TRANSITION');for(let i=0;i<36;i++)T.update();assert.equal(T.state.gameMode,'GAMEPLAY');assert.equal(T.camera.y<0x0A00,true);
+
+// Hotel checkpoint is separate from modern Quick Save. Merely servicing the hotel refreshes
+// the full 8-slot backup and password buffer; Continue reconstructs from the retail start camera.
+sandbox.localStorage._m.clear();T.clearHotelCheckpoint();T.start(true);for(const sl of T.player.inventory){sl.id=0;sl.value=0}
+const hotelInv25=[{id:0x0F,value:0},{id:0x07,value:3},{id:0x04,value:2},{id:0x12,value:0xFF},{id:0x14,value:0xFF},{id:0x18,value:0xFF},{id:0x17,value:0xFF},{id:0x09,value:17}];hotelInv25.forEach((v,i)=>Object.assign(T.player.inventory[i],v));T.player.equippedItem=0x0F;T.player.equippedSlot=0;T.player.equipment.mantle=true;T.player.equipment.helmet=true;T.player.gold=12340;T.player.xp=67890;T.camera.x=0x0900;T.camera.y=0x0300;
+assert.equal(T.beginInterior('hotel'),true);for(let i=0;i<33;i++)T.update();T.update();assert.equal(T.hasHotelCheckpoint(),true);const cp25=T.getHotelCheckpoint();assert.equal(cp25.inventory.length,8);assert.deepEqual(Array.from(cp25.inventory,x=>[x.id,x.value]),hotelInv25.map(x=>[x.id,x.value]));assert.equal(sandbox.localStorage._m.has('valkyrie.frontend.stage9.save.v2'),false,'physical hotel checkpoint no longer creates a modern Quick Save');assert.equal(sandbox.localStorage._m.has('valkyrie.frontend.hotelCheckpoint.v1'),true);
+T.resetTitleFrontend(true);assert.equal(T.state.front.continueSelected,true,'title recognizes hotel checkpoint separately');H.frontPress('Enter');T.updateFrontend();T.updateFrontend();assert.equal(T.state.gameMode,'PASSWORD_ENTRY');T.updateFrontend();assert.equal(T.state.gameMode,'GAME_INIT','live hotel checkpoint auto-validates password and routes to GAME_INIT');assert.equal(T.camera.x,0x0100);assert.equal(T.camera.y,0x0800,'Continue reconstructs world at retail start camera, not hotel location');assert.deepEqual(Array.from(T.player.inventory,x=>[x.id,x.value]),hotelInv25.map(x=>[x.id,x.value]),'full hotel 8-slot backup restored');for(let i=0;i<32;i++)T.update();assert.equal(T.state.gameMode,'GAMEPLAY');
+
+// Progressive PasswordDecode side effect: checksum can be valid while a later Gold range
+// check fails. Fields written before that reject remain mutated, exactly like retail RAM.
+const A25='0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';function makeRetailPassword25(payload){const p=payload.slice();const salt=p[9]&7,r=H.rotate72Right(p,salt+1);for(let i=0;i<9;i++)p[i]=r[i];return Array.from(H.transposeEncode(p),x=>A25[x]).join('')}
+T.start(true);T.player.gold=777;T.player.expThresholdIndex=2;T.player.sign=0;T.player.blood=0;T.player.color=0;const badPayload25=Array(10).fill(0);badPayload25[1]=0x18;badPayload25[4]=0x40;badPayload25[5]=0xE9;badPayload25[7]=0x20;badPayload25[8]=77;badPayload25[9]=0x28;const semanticBad25=makeRetailPassword25(badPayload25);assert.equal(T.decodeRetailPassword(semanticBad25).ok,false);const partial25=T.applyRetailPassword(semanticBad25);assert.equal(partial25.ok,false);assert.equal(partial25.partial,true);assert.equal(T.player.expThresholdIndex,77);assert.equal(T.player.maxHp,64);assert.equal(T.player.maxMp,32);assert.equal(T.player.sign,9);assert.equal(T.player.blood,2);assert.equal(T.player.color,3);assert.equal(T.player.gold,777,'Gold write happens after the rejected high-range check');
+
+// Corrupt live hotel checkpoint follows the recovered phase quirk: PasswordReject INC takes
+// phase 0 -> 1 rather than entering the normal phase-2 manual error delay.
+T.clearHotelCheckpoint();sandbox.localStorage.setItem('valkyrie.frontend.hotelCheckpoint.v1',JSON.stringify({v:1,password:'000000000000000000',inventory:Array.from({length:8},()=>({id:0,value:0})),equippedItem:0,equippedSlot:-1,equipment:{}}));T.resetTitleFrontend(true);assert.equal(T.state.front.continueSelected,true);H.frontPress('Enter');T.updateFrontend();T.updateFrontend();T.updateFrontend();assert.equal(T.state.front.passwordFailures,1);assert.equal(T.state.front.phase,1,'corrupt checkpoint reject lands on phase 1 quirk, not manual phase-2 delay');
+
+// Controller-2 A+B death shortcut runs first in the item menu, but a later P1 action in
+// the same handler can overwrite GameMode back to gameplay.
+T.clearHotelCheckpoint();T.start(true);T.beginItemSpellMenu();H.setP2AB(true);T.updateItemSpellMenu();assert.equal(T.player.dead,true);assert.equal(T.state.gameMode,'DEATH','P2 A+B alone requests death');H.setP2AB(false);
+T.start(true);T.beginItemSpellMenu();H.setP2AB(true);H.setPressed('KeyI');T.updateItemSpellMenu();assert.equal(T.player.dead,false);assert.equal(T.state.gameMode,'GAMEPLAY','same-frame P1 cancel overwrites P2 death request');H.setP2AB(false);
+
+assert.match(html12,/data-action="stage25-transition-test"/);assert.match(html12,/CONTINUE HOTEL CHECKPOINT/);assert.match(html12,/Stage 25 FLOW CONFORMANCE/);
+console.log('Stage 25 regression: PASS');
