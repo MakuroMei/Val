@@ -1,25 +1,23 @@
-Valkyrie Frontend Rebuild — Stage 21 BIG UPDATE
+Valkyrie Frontend Stage 25 validation
+=====================================
 
-Stage 21 regression: PASS
-- Stage 7–20 regression coverage retained
-- GAMEPLAY → ENTER_INTERIOR → INTERIOR handoff: PASS
-- 256px enter stream at 8px/update: PASS
-- Recovered shop initial position $D0,$A0: PASS
-- Six-shelf zone + shop profile + B buy integration: PASS
-- SHOP_TRANSACTION + A cancel: PASS
-- Right-door leave trigger: PASS
-- 256px leave stream + 4 stable frames → GAMEPLAY: PASS
-- Hotel spatial bed trigger: PASS
-- Hotel service order (level / poison / MP / incremental HP): PASS
-- Hotel service result for 100G / poison / 0MP / 4HP missing → 56G: PASS
-- Mobile A ACTION + physical Shop/Hotel shortcuts: PASS
+- JavaScript syntax: PASS
+- Stage 7-22 legacy regression: PASS
+- Stage 23 regression: PASS
+- Stage 24 regression: PASS
+- Stage 25 regression: PASS
+- Audio validation: PASS (45 finite requests + 10 persistent requests)
+- DOM reference check: PASS
+- Local asset reference check: PASS
+- No .nes ROM in deliverable: PASS
 
-Stage 21 audio validation: PASS
-- 45 finite requests match recovered frame lengths
-- 10 persistent requests survive 20,000 frames each
-
-Browser headless E2E: NOT COUNTED
-- Chromium still times out in this container on DBus / UPower initialization.
-- No successful screenshot was produced, so this is not reported as a pass.
-
-NES ROM files in deliverable: 0
+Stage 25-specific coverage includes:
+- MAP_TRANSITION 32 x 8px stream + 4 HUD settle timing
+- Dungeon enter/exit and directional warp transition routing
+- Actor / encounter state lifetime across transition
+- Hotel retail checkpoint vs modern Quick Save separation
+- Full 8-slot Hotel inventory backup restore through Continue
+- Password progressive-write reject side effects
+- Corrupt live-checkpoint phase quirk
+- Controller 2 A+B death request and same-frame P1 overwrite
+- Quick Save transition-state preservation

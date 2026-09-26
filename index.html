@@ -1,5 +1,5 @@
 <!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
-<title>Valkyrie Frontend Rebuild - Stage 21</title>
+<title>Valkyrie Frontend Rebuild - Stage 24</title>
 <style>
 :root{color-scheme:dark}*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}html,body{overscroll-behavior:none}body{margin:0;min-height:100vh;display:grid;place-items:center;background:#101014;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color:#ddd;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
 button{font-family:inherit}.wrap{display:flex;flex-direction:column;align-items:center;gap:10px;padding:12px 12px calc(12px + env(safe-area-inset-bottom))}.frame{position:relative;background:#000;padding:8px;border:1px solid #444;box-shadow:0 18px 60px #0008}
@@ -10,10 +10,10 @@ canvas{width:min(768px,calc(100vw - 40px));height:auto;aspect-ratio:256/240;imag
 .frontPanel{position:absolute;z-index:34;inset:10px;display:none;overflow:auto;background:#0b0d12f8;border:1px solid #777;border-radius:9px;padding:10px;box-shadow:0 12px 36px #000d;touch-action:pan-y}.frontPanel.open{display:block}.frontHead{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}.frontTitle{font-size:13px;font-weight:700}.frontClose{width:34px;height:30px;border:1px solid #666;background:#222;color:#fff;border-radius:6px;font-size:18px}.frontNote{font-size:9px;line-height:1.45;opacity:.65;margin-top:7px}.frontGrid{display:grid;grid-template-columns:1fr 1fr;gap:6px}.frontGrid label{display:grid;gap:4px;font-size:10px;opacity:.9}.frontGrid select,.passwordInput{width:100%;min-height:38px;border:1px solid #555;background:#171a20;color:#fff;border-radius:6px;padding:6px;font:12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.frontWide{display:block;width:100%;min-height:42px;margin-top:9px;border:1px solid #555;background:#20242b;color:#fff;border-radius:7px;font:11px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;touch-action:manipulation}.passwordInput{text-transform:uppercase;letter-spacing:.08em;font-size:14px}.passwordPreview{margin-top:8px;padding:8px;border:1px solid #3f4652;border-radius:6px;background:#12151a;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;word-break:break-all}.titleActions{display:flex;gap:8px;justify-content:center;flex-wrap:wrap}.continuebtn{border:1px solid #555;background:#1b1b20;color:#eee;border-radius:8px;padding:9px 18px;font:700 12px monospace;touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}.statusPanel{position:absolute;z-index:32;inset:10px;display:none;overflow:auto;background:#0d0f14f8;border:1px solid #777;border-radius:9px;padding:10px;box-shadow:0 12px 36px #000d;touch-action:pan-y}.statusPanel.open{display:block}.statusHead{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:8px}.statusTitle{font-size:13px;font-weight:700}.statusClose{width:34px;height:30px;border:1px solid #666;background:#222;color:#fff;border-radius:6px;font-size:18px}.statusGrid{display:grid;grid-template-columns:minmax(72px,.75fr) 1.5fr;gap:5px 10px;padding:8px;border:1px solid #343945;border-radius:7px;background:#141820;font-size:10px;line-height:1.45}.statusGrid div{opacity:.62}.statusGrid b{font-weight:600;overflow-wrap:anywhere}.statusNote{font-size:9px;line-height:1.5;opacity:.62;margin-top:9px;padding:8px;border:1px solid #2d313a;border-radius:6px}.endingTag{opacity:.66}
 @media(max-width:420px){.frontPanel{inset:7px;padding:8px}.frontGrid{grid-template-columns:1fr}.passwordInput{font-size:13px}}
 </style></head><body><div class="wrap"><div class="frame"><canvas id="game" width="256" height="240"></canvas>
-<button class="menuBtn" id="menuBtn" aria-label="遊戲選單">☰</button>
+<button class="menuBtn" id="menuBtn" aria-label="遊戲選單" hidden>☰</button>
 <div class="gameMenu" id="gameMenu">
   <div class="menuStatus" id="menuStatus">SPECIAL MENU</div>
-  <button data-action="inventory">🎒 ITEMS / MAGIC</button>
+  <button data-action="inventory">🎒 ITEM / SPELL MENU</button>
   <button data-action="status">📊 STATUS / EQUIPMENT</button>
   <button data-action="audio">🔊 AUDIO · MUTE / ON</button>
   <button data-action="debug">F2 · 除錯資訊 / Collision Boxes</button>
@@ -25,6 +25,8 @@ canvas{width:min(768px,calc(100vw - 40px));height:auto;aspect-ratio:256/240;imag
   <button data-action="contact-timing">S18 · 接觸傷害節奏測試</button>
   <button data-action="drop-lifecycle">S19 · 掉落 / Gold / 子彈判定測試</button>
   <button data-action="hidden-render">S20 · 隱藏拾取 / 重疊顯示測試</button>
+  <button data-action="stage24-visual-test">S24 · Palette / OAM / Patch 測試</button>
+  <button data-action="stage25-transition-test">S25 · Map Transition / Checkpoint 測試</button>
   <button data-action="reset-encounters">重置 Encounter Locks</button>
   <button data-action="test-kit">S12 測試套件</button>
   <button data-action="password">🔐 PASSWORD / CONTINUE</button>
@@ -32,6 +34,7 @@ canvas{width:min(768px,calc(100vw - 40px));height:auto;aspect-ratio:256/240;imag
   <button data-action="load">📂 LOAD SAVE · F9</button>
   <button data-action="shop-test">S21 · 進入實體商店</button>
   <button data-action="hotel-test">S21 · 進入實體旅館</button>
+  <button data-action="frontend-test">S22 · 回前台互動標題</button>
   <button data-action="restart">重新開始目前遊戲</button>
   <button class="danger" data-action="title">R · 回標題畫面</button>
 </div>
@@ -65,11 +68,11 @@ canvas{width:min(768px,calc(100vw - 40px));height:auto;aspect-ratio:256/240;imag
   <div class="frontHead"><div class="frontTitle">PASSWORD / CONTINUE</div><button class="frontClose" id="passwordClose" aria-label="關閉">×</button></div>
   <input class="passwordInput" id="passwordInput" maxlength="18" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="18 SYMBOLS · 0-9 A-Z">
   <button class="frontWide" id="passwordSubmit">LOAD RETAIL PASSWORD</button>
-  <button class="frontWide" id="checkpointLoad">LOAD LOCAL CHECKPOINT</button>
+  <button class="frontWide" id="checkpointLoad">CONTINUE HOTEL CHECKPOINT</button>
   <div class="passwordPreview" id="passwordStatus">輸入原版 18 字元 password。Checksum / payload / salt rotation 會依逆向工程規則驗證。</div>
-  <div class="frontNote">原版 password 只保存 Gold/EXP（個位捨去）、MaxHP/MaxMP、角色 traits、Level/EXP curve，以及 Super Sword / Blue Mantle / Blue Helmet / Marco / Tiara。Quick Save 仍是較完整的前端存檔。</div>
+  <div class="frontNote">原版 password 只保存 Gold/EXP（個位捨去）、MaxHP/MaxMP、角色 traits、Level/EXP curve，以及 Super Sword / Blue Mantle / Blue Helmet / Marco / Tiara。旅館 checkpoint 另外保存完整 8-slot inventory，Continue 會從原版起點重新 GAME_INIT；Quick Save 則保留為現代便利功能。</div>
 </div></div>
-<div class="touchbar"><div class="controls" id="dpad" aria-label="滑動方向鍵"><button class="up" data-dir="ArrowUp">▲</button><button class="left" data-dir="ArrowLeft">◀</button><button class="down" data-dir="ArrowDown">▼</button><button class="right" data-dir="ArrowRight">▶</button></div><button class="attackbtn" data-key="KeyX">A<br>ACTION</button><button class="attackbtn" data-key="Space">B<br>ATTACK</button></div>
-<div class="titleActions"><button class="startbtn" id="startBtn">NEW GAME / ENTER</button><button class="continuebtn" id="continueBtn">CONTINUE / PASSWORD</button></div>
-<div class="hint">方向鍵 / WASD 移動・Z / J / Space = B・X / K = A・Enter 新遊戲 / ACTION・R 回標題・F2 除錯・F3 射擊敵人測試・F5 儲存・F9 讀取<br><span class="tag">Stage 21 BIG UPDATE：真正的 SHOP / HOTEL INTERIOR + 256px 進出轉場 + 室內碰撞 + 貨架買物 / 賣物區 + 旅館床鋪逐項服務 + GameMode 流程。手機新增 A ACTION。純前端，沒有 NES 模擬器。</span></div></div>
+<div class="touchbar"><div class="controls" id="dpad" aria-label="滑動方向鍵"><button class="up" data-dir="ArrowUp">▲</button><button class="left" data-dir="ArrowLeft">◀</button><button class="down" data-dir="ArrowDown">▼</button><button class="right" data-dir="ArrowRight">▶</button></div><button class="attackbtn" data-key="KeyX">A<br>ACTION/SELECT</button><button class="attackbtn" data-key="Space">B<br>ATTACK/START</button></div>
+<div class="titleActions" hidden><button class="startbtn" id="startBtn">NEW GAME / ENTER</button><button class="continuebtn" id="continueBtn">CONTINUE / PASSWORD</button></div>
+<div class="hint">前台：A = SELECT、B / Enter = START；角色設定用方向鍵編輯；Password 用左右移格、上下改字。遊戲：方向鍵 / WASD 移動・B = 攻擊・A = ACTION・I / Tab = ITEM/SPELL MENU・R 回標題・F5 儲存・F9 讀取<br><span class="tag">Stage 25 FLOW CONFORMANCE：正式 MAP_TRANSITION 256px/8px streaming + 4-frame HUD settle、旅館原版 checkpoint 與 Quick Save 分離、Continue 重新 GAME_INIT、progressive PasswordDecode。純前端，沒有 NES 模擬器。</span></div></div>
 <script src="data.js"></script><script src="audio_data.js"></script><script src="audio.js"></script><script src="app.js"></script></body></html>

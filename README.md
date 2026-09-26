@@ -1,6 +1,226 @@
-# Valkyrie Frontend Rebuild — Stage 21 BIG UPDATE
+# Valkyrie Frontend Stage 25
+
+## Stage 25：Flow Conformance / Map Transition / Retail Hotel Checkpoint
+
+這一版不是再疊小功能，而是把兩條一直被前端便利功能簡化掉的原版流程補回來。成品仍是純 HTML / Canvas / JavaScript，不執行 `.nes` ROM。
+
+### 正式 `GAME_MAP_TRANSITION`
+
+地城入口 `$F9/$FB/$FD/$FF`、地城出口 `$D4` 與 `$F7` directional warp 現在都進正式 `MAP_TRANSITION`：
+
+- phase 0：停用 gameplay、啟動 warp SFX、準備 map stream。
+- phase 1：32 次 × 8px，合計 256px streaming。8-bit countdown 以 `0` 代表 256px，第一步變 `$F8`，第 32 步回到 `0`。
+- 第 32 個 stream update 會直接落入第一個 HUD settle tick。
+- phase 2：總共 4 個穩定 HUD tick 後回 `GAMEPLAY`，Facing 固定回 DOWN。
+- 正常畫面在這段期間維持 render-disabled 黑畫面，F2 debug 才顯示 phase / countdown。
+
+Warp 不再粗暴 `clearActors()` 或 `clearEncounterLocks()`。舊 actor 會在回到 gameplay 後依 retail viewport 自然回收；surface/dungeon encounter locks 也保留自己的生命週期。Stage 24 的 transient terrain patch 則會隨新的 camera streaming 距離正常失效。
+
+### 旅館 checkpoint 與 Quick Save 正式分家
+
+`QUICK SAVE` 仍保留，因為手機上很好用，但它現在明確是現代便利功能。原版旅館 checkpoint 另外保存：
+
+- 當下 retail 18-symbol password buffer
+- 完整 8-slot `(itemId,itemValue)` inventory backup
+- equipped item / slot 與必要裝備狀態
+
+只要進入 Hotel 並開始由 Hotel handler service，checkpoint 就會更新，不需要一定睡完。離店與完成床鋪服務時會再次持久化。
+
+Title 的 Continue 若有 Hotel checkpoint，會先重新驗證那組 password，再走 `PASSWORD_ENTRY → GAME_INIT`，Camera 從原作 `$0100,$0800` 重新建立世界，而不是像舊版一樣原地讀回飯店。若沒有 Hotel checkpoint，Continue 才進 18-symbol 手動 Password editor。
+
+### PasswordDecode progressive-write quirk
+
+Checksum 正確並不代表 PasswordDecode 一定成功。原作 decoder 會邊解析邊把欄位寫進 RAM，後面若遇到 MaxHP / Gold / EXP range reject，前面已經寫入的欄位**不會 rollback**。Stage 25 已把這個副作用保留。
+
+另外也補回 corrupt live checkpoint 的 phase `0 → 1` 怪癖，以及 Item/Spell Menu 裡 Controller 2 按住 A+B 先要求 `DEATH`、但同幀 Controller 1 action 仍可把 GameMode 覆蓋回 Gameplay 的罕見 arbitration。
+
+### Stage 25 測試
+
+右上角：`☰ → S25 · Map Transition / Checkpoint 測試` 可直接進一輪正式 Map Transition。
+
+Regression 會驗證：
+
+- 32×8px stream + 第 32 tick fall-through + 4-frame HUD settle
+- dungeon enter / exit 同一套 MAP_TRANSITION
+- warp 不 eager-clear actor / encounter lock
+- Hotel checkpoint 與 Quick Save 分離
+- Continue 從 `$0100,$0800` GAME_INIT 並還原完整 8-slot backup
+- progressive PasswordDecode side effects
+- corrupt checkpoint phase quirk
+- P2 A+B death shortcut 與同幀 P1 overwrite
+
+---
+
+# Valkyrie Frontend Stage 24
+
+## Stage 24：真正 Palette Family / Nametable Patch Lifetime / 30-sprite OAM
+
+這一版把 Stage 20 盤點時剩下最重要的三個 NES 顯示層差異補回來。成品仍是純前端，沒有 CPU/PPU/MMC3 emulator，也沒有 `.nes` ROM。
+
+### 真正的背景 Palette family
+
+Stage 11 的日夜最初用 Canvas 半透明 overlay 近似。Stage 24 改成從 v94 確認的 CHR config 與 16-byte palette records，在開發階段預先烘成 ROM-free PNG atlas：
+
+- World Group A：Dawn/Dusk、Day、Night、Lamp
+- World Group B：Dawn/Dusk、Day、Night、Lamp
+- Dungeon：Dark / Lit
+
+因此切到夜晚不是「整張畫面蓋藍色」，而是每個 2-bit CHR pixel 真的經過原作 palette index 上色。Magic Rainbow 與 Tiara 的東/南目的地會切到 Group B；一般世界與其餘 warp 使用 Group A。
+
+### Live nametable terrain patch 的生命週期
+
+`Queue2x2TerrainPatch` 在原作只寫 VRAM，不修改 ROM 世界資料。Stage 24 不再把這種 patch 當永久世界修改存進 checkpoint。當攝影機 streaming 一個完整畫面距離（X 256px / Y 216px）後，相對應 nametable cell 會視為被 authored map edge 重建，patch 自動失效。
+
+### 30 個 8×16 dynamic OAM sprite budget
+
+原版 `RenderMetaspritesToOam` 只擁有 OAM `$88-$FF`，即 30 個 8×16 sprite。Stage 24 現在會先保留玩家與 spell packet 的 sprite 數，再讓六個 actor 依每幀正／反 slot order 消耗剩餘 budget。若最後一個 metasprite 只剩部分空間，會像原版一樣畫出前幾個 component 後截斷，而不是整隻丟掉。這會自然產生大量大型 actor 重疊時的 NES flicker / clipping。
+
+右上角 `☰ → S24 · Palette / OAM / Patch 測試` 會切換 A/B palette、放一組大型 actor 壓 OAM，並在附近寫一個 transient patch。F2 debug 會顯示目前 `PAL`、`OAM x/30` 與 `CLIP`。
+
+# Valkyrie Frontend Rebuild — Stage 23 GAME MODE MENU
 
 純 HTML / Canvas / JavaScript 的前端復刻。成品不執行 `.nes` ROM，也不是 NES 模擬器。
+
+## Stage 23：原版 Item / Spell Menu + GameMode arbitration
+
+Stage 23 把 Stage 6 以來一直存在的 HTML `ITEMS / MAGIC` 面板退出正常遊戲流程，改成真正的 `GAME_ITEM_SPELL_MENU`。世界畫面保留在背景，選擇器與 item/spell 資訊直接畫在遊戲 Canvas；手機仍可從右上角 `☰ → ITEM / SPELL MENU` 進入，進入後右上角會變成 `↩` 可直接取消。鍵盤則可用 `I / Tab`。
+
+### 原版 selector 規則
+
+- Inventory 是 8 個 `(itemId,itemValue)` slot。左右移動會跳過空 slot、循環搜尋；找不到其他物品就停在原 slot。
+- 選擇器保留 slot identity，所以使用消耗品後游標可以暫時停在剛被清空的格子。
+- Spell 上 / 下只在 MaxMP 已解鎖的範圍內循環。原版方向是 **UP = 下一個 spell、DOWN = 上一個 spell**。
+- Spell unlock 門檻仍為 `0 / 40 / 60 / 80 / 120 / 160 / 200 / 240 MaxMP`。
+- Item cursor 使用 recovered 的兩列四欄座標概念：X `$0C/$18/$24/$30`、Y `$C1/$D1`。
+
+### 原版按鍵仲裁
+
+Item/Spell Menu 每個 update 的 action 優先序是：
+
+1. **A**：選定／施放目前 spell，退出到 Gameplay。
+2. **SELECT/START**：純取消，退出到 Gameplay。前端用 `I / Tab`，手機可點右上 `↩`。
+3. **B**：使用目前 inventory item，退出到 Gameplay。
+
+A 的 spell request 不是在選單裡直接跑完整 Gameplay，而是先離開選單，在下一個 Gameplay update 才真正消耗 MP／建立 spell state，保留原版 handler handoff 的節奏。
+
+### GameMode 同幀 overwrite
+
+原版 dispatcher 在一個 frame 開始時只讀一次 GameMode。Gameplay 收到 SELECT/START 後會先寫 `GAME_ITEM_SPELL_MENU`，**但舊 Gameplay handler 不會立刻 return**。因此同一幀後面如果進入死亡、室內、Ending 等狀態，後寫入的 GameMode 可以把選單請求覆蓋。
+
+Stage 23 已把這個行為搬回前端。最直接的 regression 是：同一幀要求開選單、但玩家 HP underflow 觸發死亡，最後狀態必須是 `DEATH`，不能隔空跳進選單。
+
+這版也把既有死亡／結局流程正式標成 top-level mode：
+
+- `DEATH`
+- `GAME_OVER`
+- `ENDING`
+
+所以 debug/status 看到的 GameMode 現在更接近 v94 的 15-mode state machine，而不是「GAMEPLAY + 幾個額外 flag」。
+
+### Canvas 選單
+
+- 世界背景、角色與 actor 保留畫面，但選單 active 時不推進 world clock / actor AI。
+- 下方直接顯示 8 個 inventory slot、目前 item 名稱／value。
+- 右側顯示目前 spell、MP cost、目前 MaxMP 所允許的最高 spell index。
+- A/B/方向鍵直接走同一套手機 input，沒有另外做一套 DOM button gameplay。
+
+舊 HTML Inventory panel 仍保留在檔案中作開發相容層，但右上正常入口已經不會打開它。
+
+### Stage 23 regression
+
+在 Stage 7–22 全套回歸上新增：
+
+- `GAMEPLAY → ITEM_SPELL_MENU → GAMEPLAY` 正式 mode handoff
+- Inventory 左右跳過空 slot / wrap
+- Spell UP/DOWN unlock-range wrap
+- A deferred spell cast + 下一 Gameplay update 消耗 MP
+- B item use + slot consumption
+- I/Tab cancel 無副作用
+- Gameplay menu request 與同幀 Death 的 overwrite arbitration
+- Death sequence 最終正式進 `GAME_OVER`
+- 手機右上 `ITEM / SPELL MENU` 正常入口存在
+
+Stage 10 audio validation 仍保留：45 個 finite request 精準 frame-length 核對，以及 10 個 persistent request 各跑 20,000 frames。
+
+---
+
+## Stage 22：原版 Frontend / GameMode 流程
+
+Stage 22 把先前偏 HTML 式的「開局介面」搬回遊戲 Canvas，本體正式接入 recovered frontend GameMode。Stage 21 的實體商店 / 旅館與 Stage 7–20 的戰鬥、世界、魔法、物品、音訊全部保留。
+
+### Title 三階段
+
+- `TITLE phase 0`：建置前台狀態。
+- `TITLE phase 1`：240 update scroll-in，1px / update；A/SELECT 或 B/START 可跳過。
+- `TITLE phase 2`：New Game / Continue。A = SELECT 切換，B = START 確認。
+- 有本機 checkpoint 時，Title 預選 Continue，對應原版 `HotelCheckpointValid` 行為。
+- 互動標題閒置 10 秒進 Attract Demo。
+
+### Attract Demo
+
+- 先跑 256px、8px/update 的 initial world stream。
+- Demo 每 4 個 world seconds 重選一個 cardinal direction。
+- 每 64 frame 注入一次 B / attack pulse。
+- world clock 到 60 秒後回 Title build/scroll。
+- 玩家按 A / B / START 可立即中斷，回互動 Title。
+
+這不是錄製影片，而是同一套前端 world / actor / combat code 自己跑 Demo。
+
+### Character Setup
+
+新遊戲會進 recovered 三列編輯器，而不是 HTML select：
+
+- Zodiac：12 種
+- Blood Type：4 種
+- Color：4 種
+- 上 / 下換列，左 / 右改值，B / START 確認
+- 選中列依 FrameCounter blink
+
+畫面使用 v94 的 `$12A0` frontend PPU records 與 recovered Zodiac / Blood sprite tile table 重建。
+
+### Password Continue
+
+Continue 沒有可用本機 checkpoint 時會進遊戲內 18-symbol editor：
+
+- 左 / 右移動 18 格 cursor
+- 上 / 下修改 0–35 symbol
+- B / START 提交
+- checksum 或 semantic decode 失敗後顯示 recovered error 畫面 60 ticks
+- 第 1 / 2 次錯誤回 editor，保留 buffer
+- 第 3 次錯誤回 Title build/scroll
+
+既有 Stage 9 retail password codec 沿用，包含 18-symbol alphabet、checksum、traits、五個 persisted special-item flags。
+
+### Game Init
+
+新遊戲 / Password 成功後不再直接瞬移進 Gameplay，而是經過正式 `GAME_INIT`：256px initial world stream、8px/update，完成後才交給 `GAMEPLAY`。
+
+### 手機操作
+
+- D-pad：前台游標 / Password 編輯 / 遊戲移動
+- A `ACTION / SELECT`：Title SELECT；Attract 中斷；遊戲 ACTION
+- B `ATTACK / START`：Title / Setup / Password START；遊戲攻擊
+- `☰ → S22 · 回前台互動標題` 可隨時直接測新版 frontend
+
+舊 HTML Setup / Password panel 留作開發相容入口，但正常開機與 Continue 流程已不依賴它們。
+
+### Stage 22 regression
+
+新增測試鎖定：
+
+- 240-update Title scroll-in
+- New / Continue SELECT toggle
+- Character Setup 12 / 4 / 4 wrap
+- Character traits 傳入新遊戲
+- 256px / 8px `GAME_INIT`
+- 18-symbol Password editor
+- 60-tick reject delay
+- 三次失敗回 Title
+- 10 秒 Title idle → Attract
+- 256px Attract initial stream
+- 60-second Attract timeout
+- 手機 ACTION/SELECT、ATTACK/START 與 S22 debug shortcut
+
 
 ## Stage 21：真正的 Shop / Hotel Interior + GameMode transition
 
