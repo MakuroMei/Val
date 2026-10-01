@@ -1,8 +1,11 @@
 (() => {
 'use strict';
+const BUILD_STAGE=29;
 const canvas=document.getElementById('game'), ctx=canvas.getContext('2d');
 ctx.imageSmoothingEnabled=false;
+const gfx=globalThis.VRenderer?new globalThis.VRenderer(ctx,VGRAPHICS):null;
 const keys=new Set(), pressed=new Set();
+const keyboardHeld=new Set(), touchButtonPointers=new Map();
 let mode='title', debug=false, frame=0, frameCounter=0xFF;
 const GAME_MODE={TITLE:'TITLE',ATTRACT_DEMO:'ATTRACT_DEMO',CHARACTER_SETUP:'CHARACTER_SETUP',PASSWORD_ENTRY:'PASSWORD_ENTRY',GAME_INIT:'GAME_INIT',GAMEPLAY:'GAMEPLAY',ITEM_SPELL_MENU:'ITEM_SPELL_MENU',ENTER_INTERIOR:'ENTER_INTERIOR',INTERIOR:'INTERIOR',LEAVE_INTERIOR:'LEAVE_INTERIOR',SHOP_TRANSACTION:'SHOP_TRANSACTION',DEATH:'DEATH',MAP_TRANSITION:'MAP_TRANSITION',GAME_OVER:'GAME_OVER',ENDING:'ENDING'};
 let gameMode=GAME_MODE.TITLE, modePhase=0;
@@ -72,7 +75,7 @@ const SHOP_PROFILE_BY_X_HIGH=[0,0,1,0,0,0,0,0,0,1,2,3,2,0,0,0];
 const SHOP_PROFILES=[[0x01,0x03,0x05,0x09,0x0C,0x11],[0x07,0x04,0x06,0x09,0x0D,0x13],[0x08,0x04,0x06,0x0A,0x0E,0x16],[0x02,0x04,0x06,0x0A,0x0E,0x15]];
 const ZODIAC_NAMES=['ARIES','TAURUS','GEMINI','CANCER','LEO','VIRGO','LIBRA','SCORPIO','SAGITTARIUS','CAPRICORN','AQUARIUS','PISCES'];
 const BLOOD_NAMES=['A','B','O','AB'];
-const COLOR_NAMES=['WHITE','RED','GREEN','BLUE'];
+const COLOR_NAMES=['WHITE','CYAN','GREEN','PINK'];
 const INITIAL_EXP_CURVE=[2,1,3,1];
 const EXP_THRESHOLDS=[0,20,50,90,150,230,350,510,750,1100,1600,2200,3200,4400,6400,9000,12000,15000,20000];
 const PASSWORD_ALPHABET='0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
@@ -113,11 +116,11 @@ const COMPLEX_META={
 };
 
 const img={};
-const IMAGE_SOURCES={title:'assets/title_tiles.png',world:'assets/world_tiles.png',worldA:'assets/world_group_a.png',worldB:'assets/world_group_b.png',dungeon:'assets/dungeon_palettes.png',interior:'assets/interior_tiles.png',spr:'assets/sprites.png',player0:'assets/player_r2_0.png',player1:'assets/player_r2_1.png',player2:'assets/player_r2_2.png',player3:'assets/player_r2_3.png'};
+const IMAGE_SOURCES={title:'assets/title_tiles.png',frontend:'assets/frontend_tiles.png',world:'assets/world_tiles.png',worldA:'assets/world_group_a.png',worldB:'assets/world_group_b.png',dungeon:'assets/dungeon_palettes.png',interior:'assets/interior_tiles.png',spr:'assets/sprites.png',player0:'assets/player_r2_0.png',player1:'assets/player_r2_1.png',player2:'assets/player_r2_2.png',player3:'assets/player_r2_3.png'};
 let loaded=0;
 for (const [k,src] of Object.entries(IMAGE_SOURCES)) {
   const im=new Image();
-  im.onload=()=>{img[k]=im;if(++loaded===Object.keys(IMAGE_SOURCES).length) requestAnimationFrame(loop)};
+  im.onload=()=>{img[k]=im;if(++loaded===Object.keys(IMAGE_SOURCES).length){if(globalThis.__VALKYRIE_TEST_MANUAL_LOOP__)renderNow();else requestAnimationFrame(loop)}};
   im.src=src;
 }
 
@@ -135,7 +138,7 @@ function actorDirectionToPlayer(a){
   if(sx<0x80){if(sy<0x4F)return 5;if(sy<0x5F)return 0;return 1}
   if(sy<0x4F)return 6;if(sy<0x5F)return 7;return 8;
 }
-function actorBodyCollisionEligible(a){return !!a&&a.kind==='combat'&&a.age>=32&&a.hp>0&&a.deathTimer<=0}
+function actorBodyCollisionEligible(a){return !!a&&a.kind==='combat'&&a.age>=32&&(a.hp>0||a.hitTimer>0)&&a.deathTimer<=0}
 function registerActorBodyOverlap(a){
   if(!actorBodyCollisionEligible(a)||!bodyOverlap(a,12))return false;
   actorPlayerMoveBlockMask|=PLAYER_BLOCK_MASK_BY_ACTOR_DIRECTION[actorDirectionToPlayer(a)]||0;
@@ -158,9 +161,45 @@ function buyPrice(id){return (ITEM_PRICE_UNIT[id]||0)*16}
 function sellPrice(id){return (ITEM_PRICE_UNIT[id]||0)*8}
 function storageGet(){try{return localStorage.getItem(SAVE_KEY)||localStorage.getItem(LEGACY_SAVE_KEY)}catch{return null}}
 function storageSet(v){try{localStorage.setItem(SAVE_KEY,v);return true}catch{return false}}
-function hasSave(){return !!storageGet()}
-function readHotelCheckpointStorage(){try{const raw=localStorage.getItem(HOTEL_CHECKPOINT_KEY);if(!raw)return null;const o=JSON.parse(raw);if(o?.v!==1||typeof o.password!=='string'||!Array.isArray(o.inventory)||o.inventory.length!==8)return null;return o}catch{return null}}
-function writeHotelCheckpointStorage(o){try{localStorage.setItem(HOTEL_CHECKPOINT_KEY,JSON.stringify(o));return true}catch{return false}}
+function hasSave(){const raw=storageGet();if(!raw)return false;try{return validSnapshotShape(JSON.parse(raw))}catch{return false}}
+function integerIn(v,min,max){return Number.isInteger(v)&&v>=min&&v<=max}
+function finiteIn(v,min,max){return Number.isFinite(v)&&v>=min&&v<=max}
+function validInventorySlots(inv){return Array.isArray(inv)&&inv.length===8&&inv.every(sl=>sl&&integerIn(sl.id,0,ITEM_NAMES.length-1)&&integerIn(sl.value,0,255))}
+function recordShape(o){return !!o&&typeof o==='object'&&!Array.isArray(o)}
+function optionalFields(o,fields){return fields.every(([k,min,max])=>o[k]===undefined||integerIn(o[k],min,max))}
+function optionalBooleans(o,names){return names.every(k=>o[k]===undefined||typeof o[k]==='boolean')}
+function validEquipmentShape(o){return o===undefined||(recordShape(o)&&optionalBooleans(o,['mantle','helmet','lamp','dungeonLit']))}
+const SAVE_GAME_MODES=[GAME_MODE.GAMEPLAY,GAME_MODE.GAME_INIT,GAME_MODE.ITEM_SPELL_MENU,GAME_MODE.MAP_TRANSITION,GAME_MODE.ENTER_INTERIOR,GAME_MODE.INTERIOR,GAME_MODE.SHOP_TRANSACTION,GAME_MODE.LEAVE_INTERIOR];
+function validHotelCheckpointShape(o){return recordShape(o)&&o.v===1&&typeof o.password==='string'&&/^[0-9A-Z]{18}$/.test(o.password)&&validInventorySlots(o.inventory)&&integerIn(o.equippedItem,0,ITEM_NAMES.length-1)&&integerIn(o.equippedSlot,-1,7)&&validEquipmentShape(o.equipment)}
+function validSnapshotShape(o){
+  if(!recordShape(o)||![1,2,3].includes(o.v)||!recordShape(o.player)||!validInventorySlots(o.player.inventory))return false;
+  const p=o.player,c=o.camera||{};
+  if(o.camera!==undefined&&!recordShape(o.camera))return false;
+  if(!integerIn(p.hp,0,1023)||!integerIn(p.maxHp,1,1023)||!integerIn(p.mp,0,1023)||!integerIn(p.maxMp,0,1023)||p.hp>p.maxHp||p.mp>p.maxMp)return false;
+  if(c.x!==undefined&&!finiteIn(c.x,0,4095))return false;if(c.y!==undefined&&!finiteIn(c.y,0,5119))return false;
+  const bounded=[[p.xp,0,9999999],[p.gold,0,61430],[p.level,0,127],[p.expThresholdIndex,0,255],[p.sign,0,15],[p.blood,0,3],[p.color,0,3],[p.passwordSalt,0,7],[p.equippedItem,0,ITEM_NAMES.length-1],[p.equippedSlot,-1,7],[p.selectedSpell,0,SPELL_NAMES.length-1]];
+  for(const [v,min,max] of bounded)if(v!==undefined&&!integerIn(v,min,max))return false;
+  if(p.terrainMode!==undefined&&!['land','swim','ship','marco','sink'].includes(p.terrainMode))return false;
+  if(o.facing!==undefined&&!integerIn(o.facing,0,3))return false;if(o.frameCounter!==undefined&&!integerIn(o.frameCounter,0,255))return false;
+  if(o.worldClockSubsecond!==undefined&&!integerIn(o.worldClockSubsecond,0,59))return false;if(o.worldClockSecond!==undefined&&!integerIn(o.worldClockSecond,0,127))return false;
+  if(o.gameMode!==undefined&&!SAVE_GAME_MODES.includes(o.gameMode))return false;if(o.modePhase!==undefined&&!integerIn(o.modePhase,0,2))return false;
+  if(o.endingActive!==undefined&&o.endingActive!==false)return false;
+  if(!optionalFields(o,[['worldDay',0,Number.MAX_SAFE_INTEGER],['worldGraphicsGroup',0,1],['rngState',0,255],['gameInitProgress',0,256]])||!optionalBooleans(o,['goldBagSpawnLatch'])||!optionalBooleans(p,['poison']))return false;
+  if(o.gameInitProgress!==undefined&&o.gameInitProgress%8!==0)return false;
+  if(o.interior!==undefined){const q=o.interior;if(!recordShape(q)||![null,'shop','hotel'].includes(q.type)||!optionalFields(q,[['x',0,255],['y',0,255],['progress',0,256],['settle',0,4],['shopProfile',0,3],['sellCursor',0,7],['restTick',0,Number.MAX_SAFE_INTEGER],['restSpent',0,Number.MAX_SAFE_INTEGER],['restLevels',0,Number.MAX_SAFE_INTEGER]])||!optionalBooleans(q,['restActive']))return false}
+  if([GAME_MODE.ENTER_INTERIOR,GAME_MODE.INTERIOR,GAME_MODE.LEAVE_INTERIOR,GAME_MODE.SHOP_TRANSACTION].includes(o.gameMode)&&(!o.interior||!['shop','hotel'].includes(o.interior.type)))return false;
+  if(o.gameMode===GAME_MODE.SHOP_TRANSACTION&&o.interior.type!=='shop')return false;
+  if(o.mapTransition!==undefined){const q=o.mapTransition;if(!recordShape(q)||!optionalFields(q,[['pixelsRemaining',0,255],['streamX',-4096,8192],['hudSettle',0,4]])||(q.reason!==undefined&&typeof q.reason!=='string')||(q.targetRealm!==undefined&&!['surface','dungeon'].includes(q.targetRealm)))return false}
+  if(o.itemSpellMenu!==undefined){const q=o.itemSpellMenu;if(!recordShape(q)||!integerIn(q.inventoryCursor,0,7)||!optionalBooleans(q,['pendingSpellCast']))return false}
+  if(o.encounterSurface!==undefined&&(!Array.isArray(o.encounterSurface)||o.encounterSurface.length>20||o.encounterSurface.some(v=>!integerIn(v,0,255))))return false;
+  if(o.encounterDungeon!==undefined&&(!Array.isArray(o.encounterDungeon)||o.encounterDungeon.length>20||o.encounterDungeon.some(v=>!integerIn(v,0,255))))return false;
+  if(o.fixedState!==undefined&&(!Array.isArray(o.fixedState)||o.fixedState.length>0x80||o.fixedState.some(v=>!integerIn(v,0,255))))return false;
+  if(o.zuhlStolenPool!==undefined&&(!Array.isArray(o.zuhlStolenPool)||o.zuhlStolenPool.length>8||o.zuhlStolenPool.some(v=>!integerIn(v,0,0x1F))))return false;
+  if(!validEquipmentShape(p.equipment))return false;
+  return true;
+}
+function readHotelCheckpointStorage(){try{const raw=localStorage.getItem(HOTEL_CHECKPOINT_KEY);if(!raw)return null;const o=JSON.parse(raw);return validHotelCheckpointShape(o)?o:null}catch{return null}}
+function writeHotelCheckpointStorage(o){try{if(!validHotelCheckpointShape(o))return false;localStorage.setItem(HOTEL_CHECKPOINT_KEY,JSON.stringify(o));return true}catch{return false}}
 function clearHotelCheckpoint(){hotelCheckpoint=null;try{localStorage.removeItem(HOTEL_CHECKPOINT_KEY)}catch{}return true}
 function getHotelCheckpoint(){if(!hotelCheckpoint)hotelCheckpoint=readHotelCheckpointStorage();return hotelCheckpoint}
 function hasHotelCheckpoint(){return !!getHotelCheckpoint()}
@@ -170,28 +209,31 @@ function refreshHotelCheckpoint(persist=false){
   hotelCheckpoint=cp;if(persist)writeHotelCheckpointStorage(cp);return cp;
 }
 function restoreHotelCheckpointInventory(cp){
-  if(!cp||!Array.isArray(cp.inventory))return false;player.inventory=Array.from({length:8},(_,i)=>({id:Number(cp.inventory[i]?.id)||0,value:Number(cp.inventory[i]?.value)||0}));
+  if(!validHotelCheckpointShape(cp))return false;player.inventory=Array.from({length:8},(_,i)=>({id:Number(cp.inventory[i]?.id)||0,value:Number(cp.inventory[i]?.value)||0}));
   player.equippedItem=Number(cp.equippedItem)||0;player.equippedSlot=Number.isInteger(cp.equippedSlot)?cp.equippedSlot:-1;
   player.equipment.mantle=!!cp.equipment?.mantle;player.equipment.helmet=!!cp.equipment?.helmet;player.equipment.lamp=false;player.equipment.dungeonLit=false;return true;
 }
 function snapshotGame(){
-  return {v:3,camera:{x:camera.x,y:camera.y},facing,frameCounter,worldClockSubsecond,worldClockSecond,worldDay,worldGraphicsGroup,rngState,goldBagSpawnLatch,zuhlStolenPool:[...zuhlStolenPool],gameMode,modePhase,interior:{type:interior.type,x:interior.x,y:interior.y,progress:interior.progress,settle:interior.settle,shopProfile:interior.shopProfile,sellCursor:interior.sellCursor,restActive:interior.restActive,restTick:interior.restTick,restSpent:interior.restSpent,restLevels:interior.restLevels},
+  return {v:3,camera:{x:camera.x,y:camera.y},facing,frameCounter,worldClockSubsecond,worldClockSecond,worldDay,worldGraphicsGroup,rngState,goldBagSpawnLatch,zuhlStolenPool:[...zuhlStolenPool],gameMode,modePhase,gameInitProgress,itemSpellMenu:{inventoryCursor:itemSpellMenu.inventoryCursor,pendingSpellCast:itemSpellMenu.pendingSpellCast},interior:{type:interior.type,x:interior.x,y:interior.y,progress:interior.progress,settle:interior.settle,shopProfile:interior.shopProfile,sellCursor:interior.sellCursor,restActive:interior.restActive,restTick:interior.restTick,restSpent:interior.restSpent,restLevels:interior.restLevels},
     player:{hp:player.hp,maxHp:player.maxHp,mp:player.mp,maxMp:player.maxMp,poison:player.poison,terrainMode:player.terrainMode,xp:player.xp,gold:player.gold,level:player.level,expThresholdIndex:player.expThresholdIndex,sign:player.sign,blood:player.blood,color:player.color,passwordSalt:player.passwordSalt,equippedItem:player.equippedItem,equippedSlot:player.equippedSlot,inventory:player.inventory.map(x=>({id:x.id,value:x.value})),equipment:{...player.equipment},selectedSpell:player.selectedSpell},
     terrainPatches:[],mapTransition:{...mapTransition},encounterSurface:[...encounterLocks.surface],encounterDungeon:[...encounterLocks.dungeon],fixedState:[...fixedState],endingActive};
 }
 function quickSave(label='QUICK SAVE'){
-  if(mode!=='game'||player.dead||endingActive){say('SAVE UNAVAILABLE IN CURRENT STATE',70);return false}
-  const ok=storageSet(JSON.stringify(snapshotGame()));say(ok?`${label} · STORED`:'SAVE FAILED · storage unavailable',80);updateMenuStatus();return ok;
+  if(mode!=='game'||player.dead||player.hpUnderflow||endingActive){say('SAVE UNAVAILABLE IN CURRENT STATE',70);return false}
+  const snapshot=snapshotGame();if(!validSnapshotShape(snapshot)){say('SAVE UNAVAILABLE · invalid state',70);return false}
+  const ok=storageSet(JSON.stringify(snapshot));say(ok?`${label} · STORED`:'SAVE FAILED · storage unavailable',80);updateMenuStatus();return ok;
 }
 function restoreSnapshot(o){
-  if(!o||![1,2,3].includes(Number(o.v))||!o.player||!Array.isArray(o.player.inventory))throw Error('bad save');
-  mode='game';camera.x=clamp(Number(o.camera?.x)||0x100,0,4095);camera.y=clamp(Number(o.camera?.y)||0x800,0,5119);facing=(Number(o.facing)||0)&3;gameMode=Object.values(GAME_MODE).includes(o.gameMode)?o.gameMode:GAME_MODE.GAMEPLAY;modePhase=Number(o.modePhase)||0;Object.assign(interior,{type:o.interior?.type||null,x:Number(o.interior?.x)||0xD0,y:Number(o.interior?.y)||0xA0,progress:Number(o.interior?.progress)||0,settle:Number(o.interior?.settle)||0,shopProfile:Number(o.interior?.shopProfile)||0,sellCursor:Number(o.interior?.sellCursor)||0,restActive:!!o.interior?.restActive,restTick:Number(o.interior?.restTick)||0,restSpent:Number(o.interior?.restSpent)||0,restLevels:Number(o.interior?.restLevels)||0});Object.assign(mapTransition,{pixelsRemaining:Number(o.mapTransition?.pixelsRemaining)||0,streamX:Number(o.mapTransition?.streamX)||0,hudSettle:Number(o.mapTransition?.hudSettle)||0,reason:o.mapTransition?.reason||'',targetRealm:o.mapTransition?.targetRealm||'surface'});
+  if(!validSnapshotShape(o))throw Error('bad save');
+  mode='game';camera.x=clamp(o.camera?.x??0x100,0,4095);camera.y=clamp(o.camera?.y??0x800,0,5119);facing=(Number(o.facing)||0)&3;gameMode=Object.values(GAME_MODE).includes(o.gameMode)?o.gameMode:GAME_MODE.GAMEPLAY;modePhase=Number(o.modePhase)||0;Object.assign(interior,{type:o.interior?.type||null,x:o.interior?.x??0xD0,y:o.interior?.y??0xA0,progress:Number(o.interior?.progress)||0,settle:Number(o.interior?.settle)||0,shopProfile:Number(o.interior?.shopProfile)||0,sellCursor:Number(o.interior?.sellCursor)||0,restActive:!!o.interior?.restActive,restTick:Number(o.interior?.restTick)||0,restSpent:Number(o.interior?.restSpent)||0,restLevels:Number(o.interior?.restLevels)||0});Object.assign(mapTransition,{pixelsRemaining:Number(o.mapTransition?.pixelsRemaining)||0,streamX:Number(o.mapTransition?.streamX)||0,hudSettle:Number(o.mapTransition?.hudSettle)||0,reason:o.mapTransition?.reason||'',targetRealm:o.mapTransition?.targetRealm||'surface'});
   frameCounter=Number(o.frameCounter)&255;worldClockSubsecond=Number(o.worldClockSubsecond)||0;worldClockSecond=Number(o.worldClockSecond)||0;worldDay=Number(o.worldDay)||0;worldGraphicsGroup=Number(o.worldGraphicsGroup)&1;rngState=Number(o.rngState)&255;goldBagSpawnLatch=!!o.goldBagSpawnLatch;zuhlStolenPool.fill(0);(o.zuhlStolenPool||[]).slice(0,8).forEach((v,i)=>zuhlStolenPool[i]=Number(v)&0x1F);
-  Object.assign(player,{hp:o.player.hp,maxHp:o.player.maxHp,mp:o.player.mp,maxMp:o.player.maxMp,poison:!!o.player.poison,terrainMode:o.player.terrainMode||'land',xp:o.player.xp||0,gold:o.player.gold||0,level:o.player.level||1,expThresholdIndex:o.player.expThresholdIndex??2,sign:o.player.sign??0,blood:o.player.blood??0,color:o.player.color??0,passwordSalt:o.player.passwordSalt??0,equippedItem:o.player.equippedItem||0,equippedSlot:Number.isInteger(o.player.equippedSlot)?o.player.equippedSlot:-1,selectedSpell:o.player.selectedSpell||0});
+  Object.assign(player,{hp:o.player.hp,maxHp:o.player.maxHp,mp:o.player.mp,maxMp:o.player.maxMp,poison:!!o.player.poison,terrainMode:o.player.terrainMode||'land',xp:o.player.xp||0,gold:o.player.gold||0,level:o.player.level??1,expThresholdIndex:o.player.expThresholdIndex??2,sign:o.player.sign??0,blood:o.player.blood??0,color:o.player.color??0,passwordSalt:o.player.passwordSalt??0,equippedItem:o.player.equippedItem||0,equippedSlot:Number.isInteger(o.player.equippedSlot)?o.player.equippedSlot:-1,selectedSpell:o.player.selectedSpell||0});
   player.inventory=Array.from({length:8},(_,i)=>({id:Number(o.player.inventory[i]?.id)||0,value:Number(o.player.inventory[i]?.value)||0}));player.equipment={mantle:!!o.player.equipment?.mantle,helmet:!!o.player.equipment?.helmet,lamp:!!o.player.equipment?.lamp,dungeonLit:!!o.player.equipment?.dungeonLit};player.itemActionFlags=0;player.spellHealTimer=0;player.hurtBlink=0;player.hpUnderflow=false;player.dead=false;
   terrainPatches.clear();terrainPatchOrigins.clear(); // retail VRAM terrain patches do not survive a reconstructed nametable / checkpoint load
-  encounterLocks.surface.fill(0);encounterLocks.dungeon.fill(0);(o.encounterSurface||[]).slice(0,20).forEach((v,i)=>encounterLocks.surface[i]=v);(o.encounterDungeon||[]).slice(0,20).forEach((v,i)=>encounterLocks.dungeon[i]=v);fixedState.fill(0);(o.fixedState||[]).slice(0,0x80).forEach((v,i)=>fixedState[i]=v);
-  sinkSequenceActive=false;hazardTimer=0;magicRainbowActive=false;actorPlayerMoveBlockMask=0;endingActive=!!o.endingActive;if(gameMode!==GAME_MODE.GAMEPLAY){clearActors();resetSpell();attackTimer=0;attackHitActive=false}ending.phase=endingActive?1:0;ending.timer=0;ending.scene=0;ending.scroll=0;ending.flash=0;pyramidPatchAnchor=null;resetSpell();clearActors();attackTimer=0;attackHitActive=false;moving=false;bump=0;deathState='alive';deathTimer=0;deathY=PLAYER_SCREEN.y;gameOverTimer=0;notice='';noticeTimer=0;keys.clear();pressed.clear();closeGameMenu();closeInventoryPanel();closeServicePanel();renderInventoryPanel();say('SAVE LOADED · transient actors reset',85);return true;
+  encounterLocks.surface.fill(0);encounterLocks.dungeon.fill(0);(o.encounterSurface||[]).slice(0,20).forEach((v,i)=>encounterLocks.surface[i]=v);(o.encounterDungeon||[]).slice(0,20).forEach((v,i)=>encounterLocks.dungeon[i]=v);fixedState.fill(0);(o.fixedState||[]).slice(0,0x80).forEach((v,i)=>fixedState[i]=v&0xFE);
+  gameInitProgress=o.gameInitProgress??0;itemSpellMenu.inventoryCursor=o.itemSpellMenu?.inventoryCursor??0;itemSpellMenu.pendingSpellCast=!!o.itemSpellMenu?.pendingSpellCast;itemSpellMenu.openedFrame=frame;
+  if(player.terrainMode==='sink')player.terrainMode='land';
+  sinkSequenceActive=false;hazardTimer=0;magicRainbowActive=false;actorPlayerMoveBlockMask=0;endingActive=!!o.endingActive;if(gameMode!==GAME_MODE.GAMEPLAY){clearActors();resetSpell();attackTimer=0;attackHitActive=false}ending.phase=endingActive?1:0;ending.timer=0;ending.scene=0;ending.scroll=0;ending.flash=0;pyramidPatchAnchor=null;resetSpell();clearActors();attackTimer=0;attackHitActive=false;moving=false;bump=0;deathState='alive';deathTimer=0;deathY=PLAYER_SCREEN.y;gameOverTimer=0;notice='';noticeTimer=0;resetInput();closeGameMenu();closeInventoryPanel();closeServicePanel();closeStatusPanel();closeSetupPanel();closePasswordPanel();menuBtn.hidden=false;menuBtn.textContent=gameMode===GAME_MODE.ITEM_SPELL_MENU?'↩':'☰';renderInventoryPanel();say('SAVE LOADED · transient actors reset',85);return true;
 }
 function quickLoad(){const raw=storageGet();if(!raw){say('NO SAVE FOUND',65);return false}try{return restoreSnapshot(JSON.parse(raw))}catch{say('SAVE DATA INVALID',80);return false}}
 function shopProfileForWorld(){return SHOP_PROFILE_BY_X_HIGH[(camera.x>>8)&15]||0}
@@ -333,6 +375,7 @@ function castLightning(){
 function castSpell(id){
   if(mode!=='game'||player.dead||endingActive)return;
   if(id<0||id>=SPELL_NAMES.length)return;
+  if(id===0){player.selectedSpell=0;return}
   if(player.maxMp<SPELL_UNLOCK[id]){say(`${SPELL_NAMES[id]} LOCKED · MaxMP ${SPELL_UNLOCK[id]} required`,80);return}
   if(spell.type!==0){say(`${SPELL_NAMES[id]} · another spell effect is active`,70);return}
   const cost=SPELL_COST[id];if(player.mp<cost){say(`${SPELL_NAMES[id]} · NOT ENOUGH MP`,70);return}
@@ -371,12 +414,12 @@ function resolveRelicActionNow(id){
     if(s.tile!==0xE5&&s.tile!==0xE7){say('TIME KEY ACTION · no ending gate at facing tile',70);return false}
     const missing=requiredEndingRelics().filter(x=>!hasInventoryItem(x));
     if(missing.length){say(`ENDING GATE · missing ${missing.map(x=>ITEM_NAMES[x]).join(', ')}`,120);return false}
-    endingActive=true;gameMode=GAME_MODE.ENDING;modePhase=0;ending.phase=0;ending.timer=0;ending.scene=0;ending.scroll=0;ending.flash=0;keys.clear();pressed.clear();audioPlay(SFX.MAJOR);say('ENDING GATE OPEN',180);return true;
+    endingActive=true;gameMode=GAME_MODE.ENDING;modePhase=0;ending.phase=0;ending.timer=0;ending.scene=0;ending.scroll=0;ending.flash=0;resetInput();audioPlay(SFX.MAJOR);say('ENDING GATE OPEN',180);return true;
   }
   return false;
 }
 function beginMapTransition(reason='WORLD TRANSITION'){
-  if(mode!=='game'||player.dead)return false;gameMode=GAME_MODE.MAP_TRANSITION;modePhase=0;mapTransition.pixelsRemaining=0;mapTransition.streamX=0;mapTransition.hudSettle=0;mapTransition.reason=reason;mapTransition.targetRealm=realm();moving=false;attackTimer=0;attackHitActive=false;keys.clear();pressed.clear();return true;
+  if(mode!=='game'||player.dead)return false;gameMode=GAME_MODE.MAP_TRANSITION;modePhase=0;mapTransition.pixelsRemaining=0;mapTransition.streamX=0;mapTransition.hudSettle=0;mapTransition.reason=reason;mapTransition.targetRealm=realm();moving=false;attackTimer=0;attackHitActive=false;resetInput();return true;
 }
 function updateMapTransition(){
   moving=false;
@@ -420,12 +463,17 @@ function serviceTerrainPatchStreaming(){
   for(const k of [...terrainPatches.keys()]){const o=terrainPatchOrigins.get(k);if(!o||Math.abs(camera.x-o.cx)>=256||Math.abs(camera.y-o.cy)>=216){terrainPatches.delete(k);terrainPatchOrigins.delete(k)}}
 }
 
-function surfacePaletteFamily(){if(player.equipment.lamp)return 3;const p=dayPhase();return p==='DAY'?1:p==='NIGHT'?2:0}
+function surfacePaletteFamily(){if(player.dead&&deathTimer>=123)return 0;if(player.equipment.lamp)return 3;const p=dayPhase();return p==='DAY'||(worldDay===0&&worldClockSecond<8)?1:p==='NIGHT'?2:0}
 function worldBackgroundAtlas(){
-  if(realm()==='dungeon')return{atlas:img.dungeon||img.world,row:player.equipment.dungeonLit?1:0};
-  return{atlas:(worldGraphicsGroup?img.worldB:img.worldA)||img.world,row:surfacePaletteFamily()};
+  if(realm()==='dungeon')return{atlas:img.dungeon||img.world,row:endingActive&&ending.phase===1&&ending.timer>0?2+(player.equipment.dungeonLit?4:0)+(((frameCounter-Math.max(0,ending.timer-299))&12)>>2):player.equipment.dungeonLit&&!player.dead?1:0};
+  return{atlas:(worldGraphicsGroup?img.worldB:img.worldA)||img.world,row:endingActive&&ending.phase===1&&ending.timer>0?4+surfacePaletteFamily()*4+(((frameCounter-Math.max(0,ending.timer-299))&12)>>2):surfacePaletteFamily()};
 }
-function drawBgTile(atlas,tile,pal,x,y,family=0){ctx.drawImage(atlas,tile*8,family*32+(pal&3)*8,8,8,Math.round(x),Math.round(y),8,8)}
+function drawBgTile(atlas,tile,pal,x,y,family=0){
+  x=Math.round(x);y=Math.round(y);const top=Math.max(0,-y),bottom=Math.min(8,(gfx?.clipBottom??240)-y),h=bottom-top,w=Math.min(8,(gfx?.clipRight??256)-x);if(h<=0||w<=0||x+8<=0)return;
+  const cfg=atlas===img.frontend?1:atlas===img.title?0:atlas===img.interior?5:atlas===img.worldB?3:2;
+  gfx?.background(cfg,tile,x,y+top,h,top);
+  ctx.drawImage(atlas,tile*8,family*32+(pal&3)*8+top,w,h,x,y+top,w,h);
+}
 function titlePaletteAt(col,row){const ai=((row>>2)*8)+(col>>2),a=VDATA.titleAttrs[ai]||0,sh=((row&2)?4:0)+((col&2)?2:0);return(a>>sh)&3}
 const FRONT_CHARSETUP_RECORDS=[
   [0x20C6,[0x80,0x82,0x84,0x86,0x88,0x8A]],[0x20E6,[0x81,0x83,0x85,0x87,0x89,0x8B]],
@@ -434,13 +482,14 @@ const FRONT_CHARSETUP_RECORDS=[
 ];
 const FRONT_PASSWORD_RECORDS=[[0x20E8,[0xF8,0xFA,0xFC,0xFA,0xFE,0xF5,0xF9,0xE0,0xFB,0xEC,0xFD,0xE9,0xF5,0xE5,0xE0,0xFF]],[0x218C,[0x9E,0x9F,0x26,0x26,0x26,0x26,0x9E,0x9F]]];
 const FRONT_PASSWORD_ERROR_RECORDS=[[0x20E8,[0xF8,0xFA,0xFC,0xFA,0xFE,0xF5,0xE3,0xF5,0x9C,0xE3,0xF5,0xE0,0x9D,0xE8,0xFF]]];
+const FRONT_GAME_OVER_RECORDS=[[0x216C,[0x10,0x0A,0x16,0x0E,0x26,0x18,0x1F,0x0E,0x1B]]]; // CHR bank 5 $10F0, recovered GAME OVER PPU script
 const FRONT_ZODIAC_SPR=[[0xA0,0xA2],[0xA4,0xA6],[0xA8,0xAA],[0xAC,0xAE],[0xB0,0xB2],[0xB4,0xB6],[0xB8,0xBA],[0xBC,0xBE],[0xC0,0xC2],[0xC4,0xC6],[0xC8,0xCA],[0xCC,0xCE]];
 const FRONT_BLOOD_SPR=[[0xD0,0xD2],[0xD4,0xD6],[0xD8,0xDA],[0xDC,0xDE]];
-function drawFrontendRecords(records,pal=0){for(const [addr,bytes] of records){const off=addr&0x3FF,row=off>>5,col=off&31;for(let i=0;i<bytes.length;i++)drawBgTile(img.title,bytes[i],pal,(col+i)*8,row*8)}}
+function drawFrontendRecords(records,pal=0,atlas=img.frontend){for(const [addr,bytes] of records){const off=addr&0x3FF,row=off>>5,col=off&31;for(let i=0;i<bytes.length;i++)drawBgTile(atlas,bytes[i],pal,(col+i)*8,row*8)}}
 function drawFrontendText(text,x,y,pal=0){for(let i=0;i<text.length;i++)drawBgTile(img.title,tileForEndingChar(text[i]),pal,x+i*8,y)}
-function drawFrontendSprite16(tile,pal,x,y){drawBgTile(img.title,tile,pal,x,y);drawBgTile(img.title,(tile+1)&255,pal,x,y+8)}
+function drawFrontendSprite16(tile,pal,x,y){draw8x16(tile,pal,x,y)}
 function drawTitleBase(offsetY=0){for(let r=0;r<30;r++)for(let c=0;c<32;c++)drawBgTile(img.title,VDATA.titleTiles[r*32+c],titlePaletteAt(c,r),c*8,r*8+offsetY)}
-function drawTitleCursor(y){ctx.fillStyle='#fff';ctx.fillRect(96,y+4,2,8);ctx.fillRect(98,y+6,2,4);ctx.fillRect(100,y+7,3,2);ctx.fillRect(105,y+7,3,2);ctx.fillRect(108,y+6,2,4);ctx.fillRect(110,y+4,2,8)}
+function drawTitleCursor(y){const tile=(frameCounter&16)?5:1;draw8x16(tile,0,96,y);draw8x16(tile+2,0,104,y)}
 function drawTitleScreen(){
   ctx.fillStyle='#000';ctx.fillRect(0,0,256,240);
   if(front.phase===1){const off=Math.max(0,240-front.titleScroll);drawTitleBase(off);const target=front.continueSelected?0x9C:0x8C;if(front.titleScroll>target)drawTitleCursor(239-(front.titleScroll-target));return}
@@ -451,20 +500,21 @@ function drawCharacterSetupScreen(){
   const blink=(frameCounter&8)!==0,sign=front.choices[0]%12,blood=front.choices[1]&3,color=front.choices[2]&3;
   if(front.cursor!==0||blink){const z=FRONT_ZODIAC_SPR[sign];drawFrontendSprite16(z[0],3,128,0x2F);drawFrontendSprite16(z[1],3,136,0x2F)}
   if(front.cursor!==1||blink){const b=FRONT_BLOOD_SPR[blood];drawFrontendSprite16(b[0],3,128,0x4F);drawFrontendSprite16(b[1],3,136,0x4F)}
-  if(front.cursor!==2||blink){drawFrontendSprite16(0x01,color,128,0x6F);drawFrontendSprite16(0x03,color,136,0x6F)}
-  drawFrontendText(ZODIAC_NAMES[sign].padStart(7,' ').slice(-7),160,56,0);drawFrontendText(BLOOD_NAMES[blood].padEnd(2,' '),160,88,0);drawFrontendText(COLOR_NAMES[color].padEnd(5,' '),160,120,0);
-  ctx.fillStyle='rgba(0,0,0,.86)';ctx.fillRect(0,200,256,40);ctx.fillStyle='#fff';ctx.font='8px monospace';ctx.fillText('UP/DOWN ROW  LEFT/RIGHT VALUE',32,214);ctx.fillText('B / ENTER = START',72,228);
+  if(front.cursor!==2||blink){drawFrontendSprite16(0x01,0,128,0x6F);drawFrontendSprite16(0x03,0,136,0x6F)}
+  for(let i=0;i<7;i++)drawBgTile(img.frontend,VGRAPHICS.zodiac[sign][i+2],0,160+i*8,56);
+  if(debug){ctx.fillStyle='#7CFF91';ctx.font='8px monospace';ctx.fillText(`CHARACTER · ROW ${front.cursor} · ${sign}/${blood}/${color}`,16,232)}
 }
+function passwordGlyphTile(v){v=Number(v)|0;return v>=0&&v<36?v:0}
 function drawPasswordScreen(){
   ctx.fillStyle='#000';ctx.fillRect(0,0,256,240);
-  if(front.phase===2){drawFrontendRecords(FRONT_PASSWORD_ERROR_RECORDS,0);ctx.fillStyle='#fff';ctx.font='8px monospace';ctx.fillText(`ERROR ${front.passwordFailures}/3 · WAIT ${Math.max(0,60-front.passwordErrorTimer)}`,57,145);return}
-  drawFrontendRecords(FRONT_PASSWORD_RECORDS,0);for(let i=0;i<18;i++)drawBgTile(img.title,front.password[i]&0x23,0,0x38+i*8,0x68);
-  const cx=0x38+front.passwordCursor*8;ctx.fillStyle=((frameCounter>>3)&1)?'#fff':'#888';ctx.fillRect(cx,0x78,8,2);
-  ctx.fillStyle='rgba(0,0,0,.86)';ctx.fillRect(0,190,256,50);ctx.fillStyle='#fff';ctx.font='8px monospace';ctx.fillText('LEFT/RIGHT CURSOR  UP/DOWN SYMBOL',20,205);ctx.fillText('B / ENTER = CHECK PASSWORD',45,219);ctx.fillText(`FAILURES ${front.passwordFailures}/3`,80,233);
+  if(front.phase===2){drawFrontendRecords(FRONT_PASSWORD_ERROR_RECORDS,0);draw8x16(0x89,1,0x38+front.passwordCursor*8,0x6F);if(debug){ctx.fillStyle='#7CFF91';ctx.font='8px monospace';ctx.fillText(`REJECT ${front.passwordFailures}/3 · ${Math.max(0,60-front.passwordErrorTimer)}`,60,145)}return}
+  drawFrontendRecords(FRONT_PASSWORD_RECORDS,0);for(let i=0;i<18;i++)drawBgTile(img.frontend,passwordGlyphTile(front.password[i]),0,0x38+i*8,0x68);
+  const cx=0x38+front.passwordCursor*8;draw8x16(0x89,1,cx,0x6F);
+  if(debug){ctx.fillStyle='#7CFF91';ctx.font='8px monospace';ctx.fillText(`PASSWORD · CUR ${front.passwordCursor} · FAIL ${front.passwordFailures}`,40,232)}
 }
 function drawAttractScreen(){
-  if(front.phase===1){ctx.fillStyle='#000';ctx.fillRect(0,0,256,240);drawWorldBackground(256-front.attractStream);ctx.fillStyle='#fff';ctx.font='8px monospace';ctx.fillText(`ATTRACT STREAM ${front.attractStream}/256`,65,230);return}
-  drawWorld();ctx.fillStyle='rgba(0,0,0,.72)';ctx.fillRect(72,4,112,14);ctx.fillStyle='#fff';ctx.font='8px monospace';ctx.fillText('ATTRACT DEMO',92,14);
+  if(front.phase===1)return drawInitialWorldStream(front.attractStream);
+  drawWorld();if(debug){ctx.fillStyle='rgba(0,0,0,.72)';ctx.fillRect(72,4,112,14);ctx.fillStyle='#7CFF91';ctx.font='8px monospace';ctx.fillText('ATTRACT DEMO',92,14)}
 }
 function drawTitle(){if(front.mode===FRONT_MODE.CHARACTER)return drawCharacterSetupScreen();if(front.mode===FRONT_MODE.PASSWORD)return drawPasswordScreen();if(front.mode===FRONT_MODE.ATTRACT)return drawAttractScreen();drawTitleScreen()}
 
@@ -480,10 +530,18 @@ function changeRealm(toDungeon){
   if(toDungeon&&realm()==='surface')camera.y+=0x0A00;if(!toDungeon&&realm()==='dungeon')camera.y-=0x0A00;
   camera.x&=0xFFF0;camera.y&=0xFFF0;serviceTerrainPatchStreaming();if(toDungeon)player.equipment.dungeonLit=false;beginMapTransition(toDungeon?'DUNGEON ENTER · DARK':'DUNGEON EXIT');
 }
-function beginDeath(){gameMode=GAME_MODE.DEATH;modePhase=0;player.dead=true;player.hpUnderflow=false;deathState='sequence';deathTimer=0;deathY=PLAYER_SCREEN.y;gameOverTimer=0;attackTimer=0;attackHitActive=false;moving=false;resetSpell();worldDay=0;keys.clear();pressed.clear();closeInventoryPanel();closeServicePanel();audioPlay(SFX.DEATH);say('VALKYRIE DOWN',90)}
+function beginDeath(){gameMode=GAME_MODE.DEATH;modePhase=0;player.dead=true;player.hpUnderflow=false;deathState='sequence';deathTimer=0;deathY=PLAYER_SCREEN.y;gameOverTimer=0;attackTimer=0;attackHitActive=false;moving=false;resetSpell();worldDay=0;resetInput();closeInventoryPanel();closeServicePanel();audioPlay(SFX.DEATH);say('VALKYRIE DOWN',90)}
 function updateDeathSequence(){
-  if(deathState==='gameover'){if(actionPressed()||attackPressed()||itemMenuPressed()){returnToTitle(true);return}if(++gameOverTimer>=256)returnToTitle();return}
+  if(deathState==='gameover')return updateGameOver();
   deathTimer++;if(deathTimer<76){if((deathTimer&7)===0)facing=(facing+1)&3;return}if(deathTimer<123)return;if(deathTimer<255)return;deathY--;if(deathY<0){deathState='gameover';gameMode=GAME_MODE.GAME_OVER;modePhase=0;gameOverTimer=0;clearActors();notice='';noticeTimer=0}}
+function updateGameOver(){
+  // Retail GAME_OVER phase 0 loads the CHR-backed PPU script, then phase 1 waits.
+  if(modePhase===0){modePhase=1;gameOverTimer=0;pressed.clear();return}
+  // The original mask is SELECT/START. This frontend intentionally remaps those title
+  // actions onto its A/B aliases, so ITEM/MENU (I/Tab) must not dismiss Game Over.
+  if(actionPressed()||attackPressed()){returnToTitle(true);return}
+  gameOverTimer=(gameOverTimer+1)&0xFF;if(gameOverTimer===0)returnToTitle(false)
+}
 function subtractPlayerHpRetail(n){
   n=Math.max(0,n|0);if(player.dead||n===0)return 0;const before=Math.max(0,player.hp|0);
   if(n>before){player.hp=0;player.hpUnderflow=true;return before}
@@ -503,7 +561,7 @@ function hurtBlinkPaletteActive(){
   // is active for 8..11, 16..19 and 24..27; all other ticks use the normal palette.
   return elapsed>=8&&(elapsed&4)===0;
 }
-function playerRenderPalette(){return hurtBlinkPaletteActive()?3:(player.color&3)}
+function playerRenderPalette(){return hurtBlinkPaletteActive()?3:0}
 
 function rawHazardDamage(n){
   if(player.dead||n<=0)return 0;return subtractPlayerHpRetail(n);
@@ -528,12 +586,12 @@ function maybeBreakDefensiveEquipment(){
   return null;
 }
 function damageFromActorPower(power,why){const raw=Math.max(0,power|0),n=player.equipment.helmet?(raw>>1):raw;damage(n,why);maybeBreakDefensiveEquipment();return n}
-function dispatchSpecialTerrain(s,dir){
+function dispatchSpecialTerrain(s,dir,swimMoving=true){
   const t=s.tile;
   if(t>=0xD0&&t<=0xD3){setPoison(true);say(`POISON TERRAIN $${hex(t)}`,45);return false}
   if(t===0xD4){changeRealm(false);return false}
-  if(t===0xD5||t===0xD6){beginInterior('shop');return false}
-  if(t===0xD7){beginInterior('hotel');return false}
+  if(t===0xD5||t===0xD6){beginInterior('shop',true);return false}
+  if(t===0xD7){beginInterior('hotel',true);return false}
   if(t>=0xD8&&t<=0xDB)return false;
   if(t>=0xDC&&t<=0xDF){if(inventoryCount()>0){setPatch2x2(s.wx,s.wy,t<=0xDD?[0x73,0xF5,0x73,0xF5]:[0xF5,0x73,0xF5,0x73]);audioPlay(SFX.BRIDGE);say('BRIDGE PATCH · original inventory-presence gate',65);return true}say('BRIDGE BLOCKED · inventory is empty',55);return false}
   if(t>=0xE0&&t<=0xE4)return false;
@@ -546,15 +604,15 @@ function dispatchSpecialTerrain(s,dir){
   if(t===0xEF){player.terrainMode='land';return true}
   if(t>=0xF0&&t<=0xF3){if(player.itemActionFlags&1){player.itemActionFlags&=~1;setPatch2x2(s.wx,s.wy,[0x2C,0x2C,0x2C,0x2C]);say('KEY GATE OPENED',70);return false}say('KEY GATE · use Key / Gold Key from ITEMS',75);return false}
   if(t===0xF4){if(!triggerMagicRainbow()){if(magicRainbowActive)say('MAGIC RAINBOW · sequence active',35);else if(worldClockSecond!==0)say('MAGIC RAINBOW · only awakens at world second $00',55);else say('MAGIC RAINBOW · Magic Ship required',55)}return true}
-  if(t===0xF5){player.terrainMode='swim';rawHazardDamage(1);return true}
+  if(t===0xF5){player.terrainMode='swim';if(swimMoving)rawHazardDamage(1);return true}
   if(t===0xF6){if((frameCounter&3)===0)rawHazardDamage(1);return true}
-  if(t===0xF7){say(`WARP TERRAIN · release D-pad and press B${hasInventoryItem(0x17)?' · TIARA route':''}`,60);return true}
+  if(t===0xF7){say(`WARP TERRAIN · release D-pad and press A${hasInventoryItem(0x17)?' · TIARA route':''}`,60);return true}
   if(t===0xF8||t===0xFA){say('PYRAMID · use Soul of Sandra from ITEMS',75);return false}
   if(t===0xF9||t===0xFB||t===0xFD||t===0xFF){changeRealm(true);return false}
   if(t===0xFC||t===0xFE){say('TIARA GATE · use Tiara from ITEMS',75);return false}
   return false;
 }
-function movementAllowed(dir){const s=collisionSample(dir);if(s.tile<0x60)return true;if(s.tile<0xD0)return false;return dispatchSpecialTerrain(s,dir)}
+function movementAllowed(dir,swimMoving=true){const s=collisionSample(dir);if(s.tile<0x60)return true;if(s.tile<0xD0)return false;return dispatchSpecialTerrain(s,dir,swimMoving)}
 function requestedDir(){
   if(keys.has('ArrowUp')||keys.has('KeyW'))return 0;if(keys.has('ArrowDown')||keys.has('KeyS'))return 1;
   if(keys.has('ArrowLeft')||keys.has('KeyA'))return 2;if(keys.has('ArrowRight')||keys.has('KeyD'))return 3;return-1;
@@ -571,11 +629,11 @@ function moveInventoryCursor(delta){
   audioPlay(SFX.CONFIRM);return itemSpellMenu.inventoryCursor;
 }
 function moveSpellCursor(delta){const hi=highestUnlockedSpell();let v=player.selectedSpell|0;if(v<0||v>hi)v=0;v=delta>0?(v>=hi?0:v+1):(v<=0?hi:v-1);player.selectedSpell=v;audioPlay(SFX.CURSOR);return v}
-function beginItemSpellMenu(){
+function beginItemSpellMenu(preserveInput=false){
   if(mode!=='game'||player.dead||endingActive||gameMode!==GAME_MODE.GAMEPLAY)return false;
   gameMode=GAME_MODE.ITEM_SPELL_MENU;modePhase=0;itemSpellMenu.openedFrame=frame;moving=false;attackHitActive=false;
   if(!player.inventory[itemSpellMenu.inventoryCursor]?.id){const i=player.inventory.findIndex(x=>x.id);if(i>=0)itemSpellMenu.inventoryCursor=i}
-  audioPlay(SFX.MENU);closeGameMenu();menuBtn.textContent='↩';closeInventoryPanel();closeServicePanel();closeStatusPanel();keys.clear();setDpadKey?.(null);return true;
+  audioPlay(SFX.MENU);closeGameMenu();menuBtn.textContent='↩';closeInventoryPanel();closeServicePanel();closeStatusPanel();if(!preserveInput)resetInput();return true;
 }
 function exitItemSpellMenu(){gameMode=GAME_MODE.GAMEPLAY;modePhase=0;moving=false;menuBtn.textContent='☰';return true}
 function updateItemSpellMenu(){
@@ -614,13 +672,21 @@ function tryAxeTerrainAction(){
   if(player.equippedItem===0x09){const i=findInventorySlot(0x09);if(i>=0){const slot=player.inventory[i];if(slot.value!==0xFF&&slot.value>0){slot.value--;if(slot.value===0)clearInventorySlot(i)}}}
   if(player.equippedItem===0)audioPlay(SFX.BREAK);say(`AXE TERRAIN PATCH $${hex(s.tile)}${player.equippedItem===0?' · AXE BROKE':''}`,70);return true;
 }
-function beginAttack(){if(player.dead||endingActive||attackTimer!==0)return;if(tryDirectionalWarp())return;attackTimer=16;attackHitActive=true;moving=false;const axe=player.equippedItem===0x09||player.equippedItem===0x0A;audioPlay(axe?SFX.AXE:SFX.SWORD);tryAxeTerrainAction()}
+function beginAttack(){if(player.dead||endingActive||attackTimer!==0)return;attackTimer=16;attackHitActive=true;moving=false;const axe=player.equippedItem===0x09||player.equippedItem===0x0A;audioPlay(axe?SFX.AXE:SFX.SWORD);tryAxeTerrainAction()}
 function updatePlayer(){
   moving=false;if(player.dead||endingActive)return;if(player.hpUnderflow){beginDeath();return}
   if(magicRainbowActive){facing=3;moveCameraOnePixel(3);moving=true;return}
+  if(!sinkSequenceActive&&actionPressed()&&tryDirectionalWarp())return;
+  const d=requestedDir();if(d>=0&&attackTimer===0&&!sinkSequenceActive)facing=d;
+  // Facing terrain is serviced even while stationary or attacking, as in $BCEA.
+  // Swim drain alone requires accepted movement; climate/thorns do not.
+  let allowed=false;
+  if(!sinkSequenceActive)allowed=movementAllowed(facing,d>=0&&attackTimer===0&&!attackPressed()&&!actorMovementBlocked(facing));
+  if(gameMode===GAME_MODE.MAP_TRANSITION||gameMode===GAME_MODE.ENTER_INTERIOR)return;
+  if(actionPressed())itemSpellMenu.pendingSpellCast=true;
   if(attackPressed())beginAttack();
   if(attackTimer>0||sinkSequenceActive)return;
-  const d=requestedDir();if(d<0)return;facing=d;if(!movementAllowed(d)){bump=5;return}if(actorMovementBlocked(d)){return}moveCameraOnePixel(d);moving=true;
+  if(d<0)return;if(!allowed){bump=5;return}if(actorMovementBlocked(d)){return}moveCameraOnePixel(d);moving=true;
 }
 
 const simpleBase={
@@ -634,7 +700,10 @@ const simpleBase={
   0x3A:0x61,0x3B:0x69,0x3C:0x75,0x3D:0x6B,0x3E:0x6F,0x3F:0x71,0x40:0x73,0x41:0xCD,0x42:0xED,0x43:0xFD,0x44:0x26,0x45:0xC8,0x46:0xEC
 };
 const singleSimple=new Set([0x27,0x28,0x29,0x2A,0x2B,0x2C,0x2D,0x2E,0x2F,0x30,0x31,0x32,0x33,0x34,0x35,0x36,0x37,0x38,0x39,0x3B,0x3C,0x3D,0x3E,0x3F,0x40,0x44]);
-function draw8x16From(source,tile,pal,x,y,flip=false){ctx.save();if(flip){ctx.translate(Math.round(x)+8,0);ctx.scale(-1,1);x=0}else x=Math.round(x);ctx.drawImage(source,tile*8,(pal&3)*16,8,16,x,Math.round(y),8,16);ctx.restore()}
+function draw8x16From(source,tile,pal,x,y,flip=false,vflip=false){
+  if(gfx){gfx.sprite(tile,(pal&3)|(flip?0x40:0)|(vflip?0x80:0),x,y);return}
+  ctx.save();ctx.translate(Math.round(x)+(flip?8:0),Math.round(y)+(vflip?16:0));ctx.scale(flip?-1:1,vflip?-1:1);ctx.drawImage(source,tile*8,(pal&3)*16,8,16,0,0,8,16);ctx.restore();
+}
 function draw8x16(tile,pal,x,y,flip=false){return draw8x16From(img.spr,tile,pal,x,y,flip)}
 function drawSimpleMetaFrom(source,id,pal,x,y,hflip=false){
   const base=simpleBase[id];if(base==null)return false;
@@ -644,8 +713,8 @@ function drawSimpleMetaFrom(source,id,pal,x,y,hflip=false){
 }
 function drawSimpleMeta(id,pal,x,y,hflip=false){return drawSimpleMetaFrom(img.spr,id,pal,x,y,hflip)}
 function drawComplexMetaFrom(source,id,basePal,x,y,hflip=false){
-  const m=COMPLEX_META[id];if(!m)return false;
-  for(const [tile,attr,dx,dy] of m.c){const ownPal=attr&3,pal=ownPal||basePal,localFlip=!!(attr&0x40),px=hflip?(m.w-8-dx):dx;draw8x16From(source,tile,pal,x+px,y+dy,hflip?!localFlip:localFlip)}return true;
+  const m=COMPLEX_META[id|0x40];if(!m)return false;
+  for(const [tile,attr,dx,dy] of m.c){const parent=(basePal&3)|(hflip?0x40:0),merged=parent|attr;draw8x16From(source,tile,merged&3,x+(hflip?8-dx:dx),y+dy,!!(merged&0x40),!!(merged&0x80))}return true;
 }
 function drawComplexMeta(id,basePal,x,y,hflip=false){return drawComplexMetaFrom(img.spr,id,basePal,x,y,hflip)}
 function playerSpriteImage(){const bank=(player.equipment.helmet?1:0)|(player.equipment.mantle?2:0);return img['player'+bank]||img.spr}
@@ -668,7 +737,7 @@ function playerAttackMeta(){
 function drawPlayerMetaAt(m,x,y){const source=playerSpriteImage(),pal=playerRenderPalette();if(m.kind==='complex')return drawComplexMetaFrom(source,m.id,pal,x,y,m.flip);return drawSimpleMetaFrom(source,m.id,pal,x,y,m.flip)}
 function drawPlayerMeta(m){return drawPlayerMetaAt(m,PLAYER_SCREEN.x,PLAYER_SCREEN.y)}
 function drawPlayer(){
-  if(player.dead&&deathState==='sequence'){let id=0x1A,pal=0,flip=false;if(deathTimer<76){id=[1,3,2,3][facing];flip=facing===3}else if(deathTimer<123)id=0x06;else if(deathTimer<255){id=0x07;pal=3}drawSimpleMeta(id,pal,PLAYER_SCREEN.x,deathTimer>=255?deathY:PLAYER_SCREEN.y,flip);return}
+  if(player.dead&&deathState==='sequence'){let id=0x1A,pal=0,flip=false;if(deathTimer<76){id=[1,3,2,3][facing];flip=facing===3}else if(deathTimer<123)id=0x06;else {id=deathTimer<255?0x07:0x1A;pal=3}drawSimpleMeta(id,pal,PLAYER_SCREEN.x,deathTimer>=255?deathY:PLAYER_SCREEN.y,flip);return}
   if(player.dead)return;
   if(invisibilityActive()&&(frameCounter&1))return;
   if(attackTimer>0){drawPlayerMeta(playerAttackMeta());return}
@@ -913,7 +982,7 @@ function updateMarcoActor(a,i){
 }
 function tryFireballHit(a){
   if(!spellIs(2)||a.kind!=='combat'||a.hp<=0||a.hitTimer>0)return false;const sx=a.x-camera.x,sy=a.y-camera.y;if(Math.abs(sx-spell.x)>=12||Math.abs(sy-spell.y)>=12)return false;
-  const dmg=fireballDamageFor(a);a.hp=Math.max(0,a.hp-dmg);a.hitTimer=40;a.knockDir=spell.dir;resetSpell();say(`FIREBALL → ${VDATA.combatLabel[a.rec]} -${dmg} HP`,70);if(a.hp===0)a.deathTimer=8;return true;
+  const dmg=fireballDamageFor(a);a.hp=Math.max(0,a.hp-dmg);a.hitTimer=40;a.knockDir=spell.dir;resetSpell();say(`FIREBALL → ${VDATA.combatLabel[a.rec]} -${dmg} HP`,70);return true;
 }
 function updatePyramidOpening(a,i){
   a.logicFrame++;if((a.logicFrame&3)!==0)a.x-=1;a.meta=0x0E+((a.logicFrame>>4)&1);const sx=a.x-camera.x;if(!a.patched&&sx<=0x80&&pyramidPatchAnchor){setPatch2x2(pyramidPatchAnchor.x,pyramidPatchAnchor.y,[0x6D,0x6D,0xF9,0xFB]);a.patched=true;say('PYRAMID OPENED · dungeon entrance exposed',110)}if(sx<-32)actors[i]=null;
@@ -929,10 +998,10 @@ function updateActor(a,i){
   if(a.age<32){a.timer=Math.max(1,0x20-a.age);return}
   if(a.deathTimer>0){if(--a.deathTimer===0)finalizeDefeat(a);return}
   if(a.hitTimer>0){
-    if(a.hitTimer>32&&a.cls!==15){const d=KNOCKBACK[a.knockDir]||[0,0];a.x+=d[0];a.y+=d[1]}a.hitTimer--;
+    if(a.hitTimer>32&&a.cls!==15){const d=KNOCKBACK[a.knockDir]||[0,0];a.x+=d[0];a.y+=d[1]}
     // Retail clears hit reaction first, then only starts the $1B death animation
     // on the following actor update. Keep overlap/body blocking on this finish tick.
-    registerActorBodyOverlap(a);if(a.cls===15)serviceShizasuLockedContact(a);
+    registerActorBodyOverlap(a);a.hitTimer--;if(a.cls===15)serviceShizasuLockedContact(a);
     return;
   }
   if(a.hp===0){a.deathTimer=8;return}
@@ -951,21 +1020,22 @@ function actorRenderOrder(){
   return (frameCounter&1)?[5,4,3,2,1,0]:[0,1,2,3,4,5];
 }
 function simpleMetaComponentCount(id){return simpleBase[id]==null?0:(singleSimple.has(id)?1:2)}
-function metaComponentCount(id){return (id&0x80)?(COMPLEX_META[id]?.c.length||0):simpleMetaComponentCount(id)}
+function metaComponentCount(id){return (id&0x80)?(COMPLEX_META[id|0x40]?.c.length||0):simpleMetaComponentCount(id)}
 function drawSimpleMetaLimited(id,pal,x,y,hflip,limit){
   const base=simpleBase[id];if(base==null||limit<=0)return 0;const n=singleSimple.has(id)?1:2,want=Math.min(n,limit);
   if(n===1){draw8x16(base,pal,x,y,hflip);return 1}
   if(!hflip){if(want>0)draw8x16(base,pal,x,y,false);if(want>1)draw8x16((base+2)&255,pal,x+8,y,false)}
   else{if(want>0)draw8x16((base+2)&255,pal,x,y,true);if(want>1)draw8x16(base,pal,x+8,y,true)}return want;
 }
-function drawComplexMetaLimited(id,basePal,x,y,hflip,limit){const m=COMPLEX_META[id];if(!m||limit<=0)return 0;let used=0;for(const [tile,attr,dx,dy] of m.c){if(used>=limit)break;const ownPal=attr&3,pal=ownPal||basePal,localFlip=!!(attr&0x40),px=hflip?(m.w-8-dx):dx;draw8x16(tile,pal,x+px,y+dy,hflip?!localFlip:localFlip);used++}return used}
+function drawComplexMetaLimited(id,basePal,x,y,hflip,limit){const m=COMPLEX_META[id|0x40];if(!m||limit<=0)return 0;let used=0;for(const [tile,attr,dx,dy] of m.c){if(used>=limit)break;const merged=(basePal&3)|(hflip?0x40:0)|attr;draw8x16From(img.spr,tile,merged&3,x+(hflip?8-dx:dx),y+dy,!!(merged&0x40),!!(merged&0x80));used++}return used}
 function actorMetaSpec(a){
+  if(a.kind==='combat'&&endingActive&&ending.phase===1&&ending.timer>=300){const id=(Math.min(ending.timer,599)-299)&4?0x44:({4:0x0A,5:0x0E,6:0x1C,7:0x16,8:0x18,9:0x1E,10:0xCE,11:0x12,15:0xD1}[a.cls]||a.meta||0x44);return{id,pal:a.pal||0,x:a.x-camera.x,y:a.y-camera.y,flip:false}}
   if(a.kind==='item')return{id:a.meta,pal:a.pal,x:a.x-camera.x+4,y:a.y-camera.y+4,flip:false};
   const x=a.x-camera.x,y=a.y-camera.y;if(a.kind==='pyramid')return{id:a.meta,pal:2,x,y,flip:false};if(a.kind==='rainbow')return{id:0xD0,pal:1,x,y,flip:false};
   if(a.kind==='marco')return{id:((a.logicFrame>>3)&1)?0x25:0x24,pal:3,x,y,flip:a.role==='reward'&&a.rewardTriggered};
   if(a.kind==='projectile')return{id:a.impactTimer>0?0x1B:a.meta,pal:a.impactTimer>0?3:1,x,y,flip:false};
   if(a.deathTimer>0)return{id:0x1B,pal:3,x,y,flip:false};if(a.age<32)return{id:spawnFlashMeta(a.age),pal:3,x,y,flip:false};
-  const flashPal=a.hitTimer>0?((a.hitTimer&2)?3:1):a.pal;
+  const flashPal=a.hitTimer>1?((a.hitTimer&1)?3:1):a.pal;
   if(a.cls===10){if(!a.zounaVisible)return null;return{id:(a.logicFrame&0x20)?0xCF:0xCE,pal:flashPal,x,y,flip:false}}
   if(a.cls===15)return{id:((a.logicFrame>>4)&1)?0xD2:0xD1,pal:flashPal,x,y,flip:false};
   if(a.cls===5&&a.blackSandraIdle)return{id:[0x0E,0x0F,0x10,0x11][(a.logicFrame>>4)&3],pal:flashPal,x,y,flip:false};
@@ -983,7 +1053,7 @@ function drawActor(a){
   if(a.kind==='projectile'){drawSimpleMeta(a.impactTimer>0?0x1B:a.meta,a.impactTimer>0?3:1,x,y,false);return}
   if(a.deathTimer>0){drawSimpleMeta(0x1B,3,x,y,false);return}
   if(a.age<32){drawSimpleMeta(spawnFlashMeta(a.age),3,x,y,false);return}
-  const flashPal=a.hitTimer>0?((a.hitTimer&2)?3:1):a.pal;
+  const flashPal=a.hitTimer>1?((a.hitTimer&1)?3:1):a.pal;
   if(a.cls===10){if(!a.zounaVisible)return;drawComplexMeta((a.logicFrame&0x20)?0xCF:0xCE,flashPal,x,y,false);return}
   if(a.cls===15){drawComplexMeta(((a.logicFrame>>4)&1)?0xD2:0xD1,flashPal,x,y,false);return}
   if(a.cls===5&&a.blackSandraIdle){drawSimpleMeta([0x0E,0x0F,0x10,0x11][(a.logicFrame>>4)&3],flashPal,x,y,false);return}
@@ -1010,26 +1080,32 @@ function updateEnding(){
   if(ending.phase===5){if(++ending.scroll>=240){ending.scroll=240;ending.phase=6}return}
 }
 function tileForEndingChar(ch){if(ch===' ')return 0x26;if(ch==='.')return 0x24;if(ch===',')return 0x25;const i=PASSWORD_ALPHABET.indexOf(ch);return i>=0?i:0x26}
-function drawEndingTextScene(scene,dy=0){ctx.fillStyle='#000';ctx.fillRect(0,0,256,240);for(const rec of ENDING_SCENES[scene]||[]){const off=(rec.a&0x3FF),row=(off>>5),col=off&31;for(let i=0;i<rec.t.length;i++)drawBgTile(img.title,tileForEndingChar(rec.t[i]),0,(col+i)*8,row*8+dy)}}
-function drawEndingFinalGraphic(y){const top=[0xDC,0xDE,0xF4,0xF6,0xF8,0xFA,0xFC,0xFE],bottom=[0xDD,0xDF,0xF5,0xF7,0xF9,0xFB,0xFD,0xFF];for(let i=0;i<8;i++){drawBgTile(img.title,top[i],0,96+i*8,y);drawBgTile(img.title,bottom[i],0,96+i*8,y+8)}}
+function drawEndingRecords(records,dy=0){
+  const attrs=Array(64).fill(0);for(const [addr,bytes] of records)if((addr&0x3FF)>=0x3C0)for(let i=0;i<bytes.length;i++)attrs[(addr&0x3FF)-0x3C0+i]=bytes[i];
+  for(const [addr,bytes] of records){if((addr&0x3FF)>=0x3C0)continue;const off=addr&0x3FF;for(let i=0;i<bytes.length;i++){const col=(off+i)&31,row=(off+i)>>5,pal=(attrs[(row>>2)*8+(col>>2)]>>(((row&2)?4:0)+((col&2)?2:0)))&3;drawBgTile(img.title,bytes[i],pal,col*8,row*8+dy)}}
+}
+function drawEndingTextScene(scene,dy=0){ctx.fillStyle='#000';ctx.fillRect(0,0,256,240);drawEndingRecords(VGRAPHICS.ending[scene]||[],dy)}
+function drawEndingFinalGraphic(dy=0){drawEndingRecords([...VGRAPHICS.endingSetup.filter(([addr])=>addr>=0x2800),...VGRAPHICS.endingFinal],dy)}
 function drawEndingScreen(){
   if(ending.phase<2)return false;
-  if(ending.phase===5){drawEndingTextScene(9,-ending.scroll);drawEndingFinalGraphic(240-ending.scroll+112);return true}
-  drawEndingTextScene(Math.min(9,ending.scene));if(ending.phase===6){drawEndingFinalGraphic(112);ctx.fillStyle='#aaa';ctx.font='8px monospace';ctx.fillText('ENDING · PHASE 6 HOLD',76,224)}return true;
+  if(ending.phase===2){ctx.fillStyle='#000';ctx.fillRect(0,0,256,240);return true}
+  if(ending.phase===5){drawEndingTextScene(9,-ending.scroll);drawEndingFinalGraphic(240-ending.scroll);return true}
+  if(ending.phase===6){ctx.fillStyle='#000';ctx.fillRect(0,0,256,240);drawEndingFinalGraphic();return true}
+  drawEndingTextScene(Math.min(9,ending.scene));return true;
 }
 
 function resetInteriorState(){Object.assign(interior,{type:null,x:0xD0,y:0xA0,progress:0,settle:0,shopProfile:0,sellCursor:0,restActive:false,restTick:0,restSpent:0,restLevels:0})}
-function beginInterior(type){
-  if(mode!=='game'||player.dead||endingActive||gameMode!==GAME_MODE.GAMEPLAY)return false;
+function beginInterior(type,fromGameplay=false){
+  if(mode!=='game'||player.dead||endingActive||(gameMode!==GAME_MODE.GAMEPLAY&&!(fromGameplay&&gameMode===GAME_MODE.ITEM_SPELL_MENU)))return false;
   closeGameMenu();closeInventoryPanel();closeServicePanel();closeStatusPanel();
   resetInteriorState();interior.type=type==='hotel'?'hotel':'shop';interior.shopProfile=shopProfileForWorld();activeShopProfile=interior.shopProfile;
-  interior.x=0xD0;interior.y=0xA0;gameMode=GAME_MODE.ENTER_INTERIOR;modePhase=0;clearActors();resetSpell();attackTimer=0;attackHitActive=false;moving=false;keys.clear();pressed.clear();
+  interior.x=0xD0;interior.y=0xA0;gameMode=GAME_MODE.ENTER_INTERIOR;modePhase=0;clearActors();resetSpell();attackTimer=0;attackHitActive=false;moving=false;resetInput();
   say(`ENTER ${interior.type.toUpperCase()} · 256px STREAM`,75);return true;
 }
 function beginLeaveInterior(){
   if(gameMode!==GAME_MODE.INTERIOR&&gameMode!==GAME_MODE.SHOP_TRANSACTION)return false;
   if(interior.type==='hotel')refreshHotelCheckpoint(true);
-  gameMode=GAME_MODE.LEAVE_INTERIOR;modePhase=0;interior.progress=0;interior.settle=0;interior.restActive=false;moving=false;keys.clear();pressed.clear();say('LEAVE INTERIOR · STREAM BACK',65);return true;
+  gameMode=GAME_MODE.LEAVE_INTERIOR;modePhase=0;interior.progress=0;interior.settle=0;interior.restActive=false;moving=false;resetInput();say('LEAVE INTERIOR · STREAM BACK',65);return true;
 }
 function updateEnterInteriorTransition(){
   moving=false;if(modePhase===0){interior.x=0xD0;interior.y=0xA0;interior.progress=0;modePhase=1;return}
@@ -1104,54 +1180,45 @@ function updateInterior(){
 }
 function drawWorldBackground(offsetX=0){
   const ox=offsetX-(camera.x&7),oy=-(camera.y&7),sx=camera.x&~7,sy=camera.y&~7,bg=worldBackgroundAtlas();
-  for(let r=-1;r<28;r++)for(let c=-1;c<34;c++){const wx=sx+c*8,wy=sy+r*8;if(wy<0||wy>=5120)continue;const z=resolveLiveWorld(wx,wy);drawBgTile(bg.atlas,z.tile,z.pal,ox+c*8,oy+r*8,bg.row)}
+  const oldClip=gfx?.clipBottom;if(gfx)gfx.clipBottom=192;
+  for(let r=-1;r<25;r++)for(let c=-1;c<34;c++){const wx=sx+c*8,wy=sy+r*8;if(wy<0||wy>=5120)continue;const z=resolveLiveWorld(wx,wy);drawBgTile(bg.atlas,z.tile,z.pal,ox+c*8,oy+r*8,bg.row)}
+  if(gfx)gfx.clipBottom=oldClip;
 }
 function drawInteriorMap(offsetX=0){
   const baseY=interior.type==='hotel'?0x0AC0:0x0A00,baseX=-8;
-  for(let r=0;r<27;r++)for(let c=0;c<33;c++){const z=resolveWorld(baseX+c*8,baseY+r*8);drawBgTile(img.interior,z.tile,z.pal,offsetX+c*8,r*8)}
+  for(let r=0;r<24;r++)for(let c=0;c<33;c++){const z=resolveWorld(baseX+c*8,baseY+r*8);drawBgTile(img.interior,z.tile,z.pal,offsetX+c*8,r*8)}
+  if(interior.type==='hotel'){const top=[...String(Math.floor(expThreshold()/10)).padStart(5,'0').slice(-5)].map(Number).concat([0,0,0x26,0x15,0x8B],String(player.level).padStart(2,'0').slice(-2).split('').map(Number));for(let i=0;i<top.length;i++)drawBgTile(img.interior,top[i],0,offsetX+88+i*8,24);for(const [v,m,y] of [[player.hp,player.maxHp,32],[player.mp,player.maxMp,40]]){const nums=String(v).padStart(3,'0').slice(-3).split('').map(Number).concat([0x29],String(m).padStart(3,'0').slice(-3).split('').map(Number));for(let i=0;i<7;i++)drawBgTile(img.interior,nums[i],0,offsetX+88+i*8,y)}const pass=encodeRetailPassword();for(let i=0;i<18;i++)drawBgTile(img.interior,passwordGlyphTile(PASSWORD_ALPHABET.indexOf(pass[i])),0,offsetX+40+i*8,80);for(let i=0,j=highestUnlockedSpell();i<7&&j>=0;i++,j--)drawSimpleMeta(SPELL_META[j],1,offsetX+72+i*16,51)}
   if(interior.type==='shop'){
     const items=SHOP_PROFILES[interior.shopProfile];for(let i=0;i<6;i++){const id=items[i],meta=ITEM_WORLD_META[id]||0x44;drawSimpleMeta(meta,ITEM_SPRITE_ATTR[id]&3,offsetX+0x60+i*16,0x43,false)}
-    drawSimpleMeta(0x46,2,offsetX+0x48,0x28,false)
+    drawSimpleMeta(0x46,2,offsetX+0x58,0x33,false)
   }
 }
 function interiorPlayerMeta(){const phase=(frameCounter>>3)&1;if(!moving)return{kind:'simple',id:[2,1,3,3][facing],flip:facing===2};return{kind:'simple',id:(phase?[13,12,3,3]:[2,1,4,4])[facing],flip:facing===2}}
-function drawInteriorPlayer(){if(interior.restActive&&((frameCounter>>3)&1))return;drawPlayerMetaAt(interiorPlayerMeta(),interior.x,interior.y)}
-function drawInteriorHud(){
-  ctx.fillStyle='rgba(0,0,0,.90)';ctx.fillRect(0,192,256,48);ctx.fillStyle='#fff';ctx.font='8px monospace';ctx.fillText(`HP ${player.hp}/${player.maxHp}  MP ${player.mp}/${player.maxMp}  G ${player.gold}`,8,203);
-  if(interior.type==='shop'){
-    const sh=shopShelfSelection();ctx.fillText(sh?`SHELF ${sh.index+1} ${ITEM_NAMES[sh.id]} · ${sh.price}G · B BUY`:'WALK TO SHELVES · LEFT ZONE + A = SELL',8,216);ctx.fillText('UP AT RIGHT DOOR = EXIT',8,229)
-  }else{ctx.fillText(interior.restActive?`RESTING · SPENT ${interior.restSpent}G`:'WALK INTO BED = AUTO SERVICE',8,216);ctx.fillText(`PASSWORD ${encodeRetailPassword().slice(0,9)} ${encodeRetailPassword().slice(9)} · UP DOOR EXIT`,8,229)}
-  if(noticeTimer>0){ctx.fillStyle='rgba(0,0,0,.82)';ctx.fillRect(4,174,248,14);ctx.fillStyle='#fff';ctx.fillText(notice.slice(0,42),8,184)}
-  if(debug){ctx.fillStyle='rgba(0,0,0,.82)';ctx.fillRect(4,4,150,28);ctx.fillStyle='#7CFF91';ctx.fillText(`GM ${gameMode} PH ${modePhase}`,8,14);ctx.fillText(`${interior.type} X $${hex(interior.x)} Y $${hex(interior.y)} P ${interior.progress}`,8,25)}
+function drawInteriorPlayer(){if(interior.restActive){drawSimpleMeta(5,0,0x48,0x81);return}drawPlayerMetaAt(interiorPlayerMeta(),interior.x,interior.y)}
+function drawInteriorHud(){drawRetailHud(true)}
+function drawShopTransactionOverlay(){/* Selection and price are rendered in reserved HUD OAM. */}
+function drawInterior(){ctx.fillStyle='#000';ctx.fillRect(0,0,256,240);if(gfx)gfx.layer=2;drawInteriorMap(0);drawInteriorHud();if(gfx)gfx.layer=1;drawInteriorPlayer()}
+function drawTransition(){ctx.fillStyle='#000';ctx.fillRect(0,0,256,240);if(debug){ctx.fillStyle='#7CFF91';ctx.font='8px monospace';ctx.fillText(`${gameMode} · ${interior.progress}/256 · RENDER OFF`,25,231)}}
+function drawInitialWorldStream(progress){
+  ctx.fillStyle='#000';ctx.fillRect(0,0,256,240);
+  const ox=-(camera.x&7),oy=-(camera.y&7),sx=camera.x&~7,sy=camera.y&~7,bg=worldBackgroundAtlas();
+  if(gfx){gfx.clipBottom=216;gfx.clipRight=progress}
+  // QueueWorldEdgeStrip fills the nametable in place, one 8px column per tick.
+  // Until the split is initialized, the last three map rows remain visible.
+  for(let r=-1;r<27;r++)for(let c=-1;c<33;c++){const x=ox+c*8,wx=sx+c*8,wy=sy+r*8;if(x>=progress||wy<0||wy>=5120)continue;const z=resolveLiveWorld(wx,wy);drawBgTile(bg.atlas,z.tile,z.pal,x,oy+r*8,bg.row)}
+  if(gfx){gfx.clipBottom=240;gfx.clipRight=256}drawRetailHud(false,true);
+  if(debug){ctx.fillStyle='#7CFF91';ctx.font='8px monospace';ctx.fillText(`WORLD STREAM · ${progress}/256`,25,231)}
 }
-function drawShopTransactionOverlay(){
-  const s=player.inventory[interior.sellCursor]||{id:0};ctx.fillStyle='rgba(0,0,0,.88)';ctx.fillRect(32,72,192,80);ctx.strokeStyle='#aaa';ctx.strokeRect(32.5,72.5,191,79);ctx.fillStyle='#fff';ctx.font='9px monospace';ctx.fillText('SELL TRANSACTION',78,90);ctx.fillText(s.id?`${interior.sellCursor+1}. ${ITEM_NAMES[s.id]}  +${sellPrice(s.id)} G`:'INVENTORY EMPTY',48,111);ctx.font='8px monospace';ctx.fillText('◀ ▶ SELECT    B SELL    A CANCEL',43,136)
-}
-function drawInterior(){ctx.fillStyle='#000';ctx.fillRect(0,0,256,240);drawInteriorMap(0);drawInteriorPlayer();drawInteriorHud();if(gameMode===GAME_MODE.SHOP_TRANSACTION)drawShopTransactionOverlay()}
-function drawTransition(){
-  ctx.fillStyle='#000';ctx.fillRect(0,0,256,240);const p=clamp(interior.progress,0,256);
-  if(gameMode===GAME_MODE.ENTER_INTERIOR){drawWorldBackground(-p);drawInteriorMap(256-p)}else{drawInteriorMap(-p);drawWorldBackground(256-p)}
-  ctx.fillStyle='rgba(0,0,0,.86)';ctx.fillRect(0,216,256,24);ctx.fillStyle='#fff';ctx.font='8px monospace';ctx.fillText(`${gameMode} · ${p}/256 · 8PX STREAM`,38,231)
-}
-function drawGameInit(){ctx.fillStyle='#000';ctx.fillRect(0,0,256,240);drawWorldBackground(256-gameInitProgress);ctx.fillStyle='rgba(0,0,0,.86)';ctx.fillRect(0,216,256,24);ctx.fillStyle='#fff';ctx.font='8px monospace';ctx.fillText(`GAME INIT · ${gameInitProgress}/256 · 8PX STREAM`,31,231)}
-function drawItemSpellMenu(){
-  drawWorld();
-  ctx.fillStyle='rgba(0,0,0,.88)';ctx.fillRect(2,174,252,64);ctx.strokeStyle='rgba(255,255,255,.68)';ctx.strokeRect(3.5,175.5,249,61);
-  ctx.fillStyle='#fff';ctx.font='8px monospace';ctx.fillText('ITEM',8,184);ctx.fillText('MAGIC',104,184);ctx.fillText('A CAST  B USE  I/TAB CANCEL',104,232);
-  // Retail inventory cursor coordinates: four columns x two rows at $0C/$18/$24/$30 and $C1/$D1.
-  const xs=[12,24,36,48], ys=[193,209];
-  for(let i=0;i<8;i++){const sl=player.inventory[i],x=xs[i&3],y=ys[i>>2];if(sl?.id){const id=ITEM_WORLD_META[sl.id]||0x44;drawSimpleMeta(id,ITEM_SPRITE_ATTR[sl.id]&3,x,y-8,false)}else{ctx.fillStyle='rgba(255,255,255,.12)';ctx.fillRect(x,y,7,7)}}
-  const ci=itemSpellMenu.inventoryCursor&7,cx=xs[ci&3],cy=ys[ci>>2];ctx.strokeStyle='#fff';ctx.strokeRect(cx-2+.5,cy-10+.5,12,19);
-  const sid=player.selectedSpell|0,sm=SPELL_META[sid]||0x44;drawSimpleMeta(sm,1,108,190,false);ctx.fillStyle='#fff';ctx.fillText(`${SPELL_NAMES[sid]||'None'}  ${SPELL_COST[sid]||0}MP`,124,199);ctx.fillText(`MP ${player.mp}/${player.maxMp}  UNLOCK 0-${highestUnlockedSpell()}`,104,211);
-  const sl=player.inventory[ci];ctx.fillText(sl?.id?`${ci+1}:${ITEM_NAMES[sl.id]} ${inventoryValueLabel(sl)}`:`${ci+1}:EMPTY`,8,232);
-  if(debug){ctx.fillStyle='#7CFF91';ctx.fillText(`GM ITEM_SPELL_MENU · CUR ${ci} · SPELL ${sid}`,76,169)}
-}
+function drawGameInit(){drawInitialWorldStream(gameInitProgress)}
+function drawItemSpellMenu(){drawWorld()}
 function drawMapTransition(){ctx.fillStyle='#000';ctx.fillRect(0,0,256,240);if(debug){ctx.fillStyle='#7CFF91';ctx.font='8px monospace';ctx.fillText(`MAP TRANSITION · PHASE ${modePhase}`,48,112);ctx.fillText(`STREAM $${hex(mapTransition.pixelsRemaining)} · SETTLE ${mapTransition.hudSettle}/4`,46,126)}}
-function drawGame(){if(gameMode===GAME_MODE.GAME_INIT)return drawGameInit();if(gameMode===GAME_MODE.MAP_TRANSITION)return drawMapTransition();if(gameMode===GAME_MODE.ENTER_INTERIOR||gameMode===GAME_MODE.LEAVE_INTERIOR)return drawTransition();if(gameMode===GAME_MODE.INTERIOR||gameMode===GAME_MODE.SHOP_TRANSACTION)return drawInterior();if(gameMode===GAME_MODE.ITEM_SPELL_MENU)return drawItemSpellMenu();return drawWorld()}
+function drawGameOverScreen(){ctx.fillStyle='#000';ctx.fillRect(0,0,256,240);drawFrontendRecords(FRONT_GAME_OVER_RECORDS,0,img.title);if(debug){ctx.fillStyle='#7CFF91';ctx.font='8px monospace';ctx.fillText(`GAME OVER · PH ${modePhase} · T $${hex(gameOverTimer)}`,48,232)}}
+function drawGame(){if(gameMode===GAME_MODE.GAME_INIT)return drawGameInit();if(gameMode===GAME_MODE.MAP_TRANSITION)return drawMapTransition();if(gameMode===GAME_MODE.GAME_OVER)return drawGameOverScreen();if(gameMode===GAME_MODE.ENTER_INTERIOR||gameMode===GAME_MODE.LEAVE_INTERIOR)return drawTransition();if(gameMode===GAME_MODE.INTERIOR||gameMode===GAME_MODE.SHOP_TRANSACTION)return drawInterior();if(gameMode===GAME_MODE.ITEM_SPELL_MENU)return drawItemSpellMenu();return drawWorld()}
 
-function frontPressed(...codes){return codes.some(c=>pressed.has(c))}
+const FRONT_INPUT_ALIASES={KeyX:['KeyK'],Space:['KeyZ','KeyJ'],ArrowUp:['KeyW'],ArrowDown:['KeyS'],ArrowLeft:['KeyA'],ArrowRight:['KeyD']};
+function frontPressed(...codes){return codes.some(c=>pressed.has(c)||(FRONT_INPUT_ALIASES[c]||[]).some(k=>pressed.has(k)))}
 function resetTitleFrontend(skipScroll=false){
-  mode='title';front.mode=FRONT_MODE.TITLE;front.phase=skipScroll?2:0;front.titleScroll=skipScroll?240:0;front.titleFrame=0;front.titleSeconds=0;front.continueSelected=hasHotelCheckpoint();front.cursor=0;front.passwordFailures=0;front.passwordErrorTimer=0;front.passwordInitialized=false;gameMode=GAME_MODE.TITLE;modePhase=front.phase;menuBtn.hidden=true;keys.clear();pressed.clear();setDpadKey?.(null);globalThis.VAudio?.allOff?.();
+  mode='title';front.mode=FRONT_MODE.TITLE;front.phase=skipScroll?2:0;front.titleScroll=skipScroll?240:0;front.titleFrame=0;front.titleSeconds=0;front.continueSelected=hasHotelCheckpoint();front.cursor=0;front.passwordFailures=0;front.passwordErrorTimer=0;front.passwordInitialized=false;gameMode=GAME_MODE.TITLE;modePhase=front.phase;menuBtn.hidden=true;resetInput();globalThis.VAudio?.allOff?.();
 }
 function beginCharacterFrontend(){front.mode=FRONT_MODE.CHARACTER;front.phase=0;front.cursor=0;gameMode=GAME_MODE.CHARACTER_SETUP;modePhase=0;keys.clear();pressed.clear()}
 function beginPasswordFrontend(){front.mode=FRONT_MODE.PASSWORD;front.phase=0;front.passwordCursor=0;front.passwordErrorTimer=0;front.passwordInitialized=false;gameMode=GAME_MODE.PASSWORD_ENTRY;modePhase=0;keys.clear();pressed.clear()}
@@ -1160,7 +1227,7 @@ function beginGameInitFromNewGame(){
 }
 function beginGameInitFromPassword(){gameMode=GAME_MODE.GAME_INIT;modePhase=1;gameInitProgress=0;menuBtn.hidden=true;say('PASSWORD ACCEPTED · INITIAL WORLD STREAM',70)}
 function beginAttractFrontend(){
-  const savedChoice=front.continueSelected;start(true,{sign:0,blood:0,color:0});mode='title';front.mode=FRONT_MODE.ATTRACT;front.phase=0;front.attractDirection=0;front.attractStream=0;front.attractTicks=0;front.continueSelected=savedChoice;gameMode=GAME_MODE.ATTRACT_DEMO;modePhase=0;menuBtn.hidden=true;keys.clear();pressed.clear();
+  const savedChoice=front.continueSelected;start(true,{sign:0,blood:0,color:0});mode='title';front.mode=FRONT_MODE.ATTRACT;front.phase=0;front.attractDirection=0;front.attractStream=0;front.attractTicks=0;front.continueSelected=savedChoice;gameMode=GAME_MODE.ATTRACT_DEMO;modePhase=0;menuBtn.hidden=true;resetInput();
 }
 function returnFromAttractToTitle(skipScroll=false){resetTitleFrontend(skipScroll)}
 function updateFrontend(){
@@ -1207,7 +1274,7 @@ function updateGameInit(){gameInitProgress=Math.min(256,gameInitProgress+8);if(g
 
 function updateWorldClock(){if(++worldClockSubsecond<60)return;worldClockSubsecond=0;worldClockSecond++;if(worldClockSecond>=0x80){worldClockSecond=0;worldDay++;player.equipment.lamp=false;if(realm()==='dungeon')player.equipment.dungeonLit=false;say(`NEW DAY ${worldDay} · temporary Lamp effect cleared`,65)}if(worldClockSecond===0x38||worldClockSecond===0x78)clearEncounterLocks()}
 function update(){
-  frame++;audioSync();globalThis.VAudio?.tick?.();if(mode==='title'){updateFrontend();return}if(mode!=='game'){pressed.clear();return}if(uiPaused()){pressed.clear();return}if(player.dead){frameCounter=(frameCounter+1)&255;updateDeathSequence();pressed.clear();return}if(endingActive){frameCounter=(frameCounter+1)&255;updateEnding();pressed.clear();return}
+  frame++;audioSync();globalThis.VAudio?.tick?.();if(uiPaused()){pressed.clear();return}if(mode==='title'){updateFrontend();return}if(mode!=='game'){pressed.clear();return}if(player.dead){frameCounter=(frameCounter+1)&255;if(gameMode===GAME_MODE.GAME_OVER)updateGameOver();else updateDeathSequence();pressed.clear();return}if(endingActive){frameCounter=(frameCounter+1)&255;updateEnding();pressed.clear();return}
   frameCounter=(frameCounter+1)&255;if(gameMode===GAME_MODE.GAME_INIT){updateGameInit();pressed.clear();return}
   if(gameMode===GAME_MODE.MAP_TRANSITION){updateMapTransition();if(noticeTimer>0)noticeTimer--;pressed.clear();return}
   if(gameMode===GAME_MODE.ENTER_INTERIOR){updateEnterInteriorTransition();if(noticeTimer>0)noticeTimer--;pressed.clear();return}
@@ -1217,7 +1284,7 @@ function update(){
   if(gameMode===GAME_MODE.ITEM_SPELL_MENU){updateItemSpellMenu();return}
   // Retail asks for the menu before gameplay work, but does not return. Later same-frame
   // death/interior/ending stores are therefore allowed to supersede this request.
-  if(gameMode===GAME_MODE.GAMEPLAY&&itemMenuPressed())beginItemSpellMenu();
+  if(gameMode===GAME_MODE.GAMEPLAY&&itemMenuPressed())beginItemSpellMenu(true);
   updateWorldClock();updateSpellEffect();updatePlayer();
   if(gameMode===GAME_MODE.MAP_TRANSITION){pressed.clear();return}
   if(itemSpellMenu.pendingSpellCast&&!player.dead&&gameMode!==GAME_MODE.DEATH){const spellId=player.selectedSpell;itemSpellMenu.pendingSpellCast=false;castSpell(spellId)}
@@ -1227,18 +1294,39 @@ function update(){
 
 function drawSpellEffect(){
   if(spell.type===0)return;
-  if(spell.type===2){let meta=spell.dir<2?0x29:0x3D,attr=1;if(spell.dir===0)attr=((spell.frame>>2)&1)?0x41:0x01;else if(spell.dir===1)attr=((spell.frame>>2)&1)?0xC1:0x81;else if(spell.dir===2)attr=((spell.frame>>2)&1)?0x81:0x01;else attr=((spell.frame>>2)&1)?0xC1:0x41;const h=!!(attr&0x40),v=!!(attr&0x80),tile=simpleBase[meta];if(tile!=null){ctx.save();ctx.translate(Math.round(spell.x)+(h?8:0),Math.round(spell.y)+(v?16:0));ctx.scale(h?-1:1,v?-1:1);ctx.drawImage(img.spr,tile*8,(attr&3)*16,8,16,0,0,8,16);ctx.restore()}return}
-  if([1,6].includes(spell.type)&&((spell.timer>>2)&1)===0){drawSimpleMeta(spell.type===1?0x3B:0x33,1,PLAYER_SCREEN.x+4,PLAYER_SCREEN.y-12,false)}
-  if(spell.type===7&&((spell.timer>>2)&1)){ctx.fillStyle='rgba(230,230,230,.22)';ctx.fillRect(0,0,256,216)}
+  if(spell.type===2){let meta=spell.dir<2?0x29:0x3D,attr=1;if(spell.dir===0)attr=((spell.frame>>2)&1)?0x41:0x01;else if(spell.dir===1)attr=((spell.frame>>2)&1)?0xC1:0x81;else if(spell.dir===2)attr=((spell.frame>>2)&1)?0x81:0x01;else attr=((spell.frame>>2)&1)?0xC1:0x41;draw8x16From(img.spr,simpleBase[meta],attr&3,spell.x,spell.y,!!(attr&64),!!(attr&128));return}
+  if([1,6].includes(spell.type)&&((spell.timer>>2)&1)===0)drawSimpleMeta(spell.type===1?0x3B:0x33,1,PLAYER_SCREEN.x+4,PLAYER_SCREEN.y-12,false);
 }
 const ENEMY_HUD_PORTRAIT={4:[0xA1,0xA3],5:[0xC1,0xC3],6:[0xD9,0xDB],7:[0xB1,0xB3],8:[0xB9,0xBB],9:[0x89,0x8B],10:[0xC1,0xC3],11:[0xE1,0xE3],15:[0xD1,0xD3]};
 function enemyHudSegments(hp){const out=[];for(let i=0;i<8;i++)out.push(clamp((hp-i*32)>>2,0,8));return out}
-function drawEnemyHud(){
-  const a=hudEnemy;if(!a||a.kind!=='combat')return;const portrait=ENEMY_HUD_PORTRAIT[a.cls];
-  ctx.fillStyle='rgba(0,0,0,.82)';ctx.fillRect(132,2,120,28);
-  if(portrait){draw8x16(portrait[0],a.pal,136,5,false);draw8x16(portrait[1],a.pal,144,5,false)}
-  const seg=enemyHudSegments(a.hp);for(let i=0;i<8;i++){ctx.fillStyle='rgba(255,255,255,.20)';ctx.fillRect(158+i*11,16,9,6);if(seg[i]){ctx.fillStyle='#fff';ctx.fillRect(159+i*11,17,Math.max(1,Math.round(7*seg[i]/8)),4)}}
-  ctx.fillStyle='#fff';ctx.font='8px monospace';ctx.fillText(`${VDATA.combatLabel[a.rec]} ${a.hp}/${a.maxHp}`,158,11);
+function drawEnemyHud(){/* Enemy portrait/bar live in the retail bottom HUD. */}
+function retailHpTiles(hp,maxHp){
+  const bar=Array(8).fill(0x26);if(maxHp>=256)bar.fill(0x30);else{const n=(maxHp>>5)&7;bar[0]=0x30;for(let i=n;i>0;i--)bar[i]=0x30}
+  if(hp>=256)bar.fill(0x38);else{const n=(hp>>5)&7;for(let i=0;i<n;i++)bar[i]=0x38;const part=(hp>>2)&7;if(part)bar[n]=0x30+part}return bar;
+}
+function retailEnemyTiles(hp){const bar=Array(8).fill(0x26),n=(hp>>5)&7;for(let i=0;i<n;i++)bar[i]=0x48;const part=(hp>>2)&7;if(part)bar[n]=0x40+part;return bar}
+function retailScoreDigits(value,count){const digits=String(Math.max(0,value|0)).padStart(count,'0').slice(-count).split('').map(Number);let seen=false;return digits.map((d,i)=>{if(d||i===count-1)seen=true;return seen?d:0x26})}
+function drawRetailHud(isInterior=false,streaming=false){
+  if(gfx)gfx.layer=0;
+  const menu=gameMode===GAME_MODE.ITEM_SPELL_MENU,selling=gameMode===GAME_MODE.SHOP_TRANSACTION,rows=Array.from(VGRAPHICS.hud),a=hudEnemy;
+  rows.splice(32+15,8,...retailHpTiles(player.hp,player.maxHp));rows.splice(32+24,6,...(player.xp<10?Array(6).fill(0x26):retailScoreDigits(Math.floor(player.xp/10),6)));rows.splice(96+26,5,...retailScoreDigits(player.gold,5));
+  if(a?.kind==='combat'&&!isInterior)rows.splice(96+15,8,...retailEnemyTiles(a.hp));
+  if(!streaming)for(let r=0;r<6;r++)for(let c=0;c<32;c++)drawBgTile(isInterior?img.interior:worldBackgroundAtlas().atlas,rows[r*32+c],0,c*8,192+r*8,0);
+  // OAM #0 and #1..#12 own the split and right-edge masks before gameplay sprites.
+  gfx?.sprite(0x38,0x20,223,192);for(let y=2;y<192;y+=16)draw8x16(0x38,0,248,y);
+  if(menu){draw8x16(0x38,0,104,193);draw8x16(0x77,3,120,64);draw8x16(0x38,0,104,209);draw8x16(0x79,3,128,64)}
+  else if(!selling){draw8x16(1,0,104,193);draw8x16(3,0,112,193);const pair=a?.kind==='combat'&&!isInterior&&!streaming?VGRAPHICS.enemyPortrait.slice(a.cls*2,a.cls*2+2):[0x38,0x38];draw8x16(pair[0],a?.pal||0,104,209);draw8x16(pair[1],a?.pal||0,112,209)}
+  let marker=player.maxHp>=256?0xB8:((player.maxHp>>2)+((player.maxHp>>1)&1)+0x78)&255;if(marker&7)marker--;
+  draw8x16From(img.spr,0x48,0,marker,191,false,true);
+  const slot=selling?interior.sellCursor:itemSpellMenu.inventoryCursor,id=menu||selling?player.inventory[slot]?.id||0:player.equippedItem;
+  if(streaming)draw8x16(0x38,0,64,208);
+  else if(!isInterior||selling)draw8x16(VGRAPHICS.itemTiles[id],ITEM_SPRITE_ATTR[id]&3,64,208);
+  else if(interior.type==='shop')draw8x16(0x4B,1,64,208);
+  if(streaming)draw8x16(0x38,0,80,208);
+  else if(!isInterior){const sid=player.selectedSpell;if(player.mp>=2*SPELL_COST[sid]||(frameCounter&4))draw8x16(VGRAPHICS.spellTiles[sid],1,80,208)}
+  for(let i=0;i<8;i++){const sl=player.inventory[i]||{id:0};draw8x16(streaming?0x38:VGRAPHICS.itemTiles[sl.id],streaming?0:ITEM_SPRITE_ATTR[sl.id]&3,12+(i&3)*12,193+(i>>2)*16)}
+  if(menu||selling){const ci=slot&7;draw8x16(0x3A,1,12+(ci&3)*12,193+(ci>>2)*16);if(menu)draw8x16(0x7B,3,136,64);draw8x16(0x38,0,112,193+((ci>>2)^1)*16)}
+    if(isInterior&&interior.type==='shop'){const sh=selling?{price:sellPrice(id)}:shopShelfSelection();if(sh){const d=retailScoreDigits(sh.price,4);for(let i=0;i<4;i++)drawBgTile(img.interior,d[i],0,40+i*8,48)}}
 }
 function spawnStage16CollisionTest(){
   if(mode!=='game'||player.dead)return;clearActors();const p=playerWorld(),rec=1,pts=[[10,0],[-10,0],[0,-10],[0,10]];
@@ -1295,18 +1383,12 @@ function drawCombatCollisionDebug(){
 function drawWorld(){
   if(endingActive&&drawEndingScreen())return;
   ctx.fillStyle='#000';ctx.fillRect(0,0,256,240);drawWorldBackground(0)
+  drawRetailHud();drawTerrainEventMarker();
   const reserved=playerOamComponentCount()+spellOamComponentCount();let remaining=Math.max(0,30-reserved);oamDynamicUsed=reserved;oamDynamicClipped=0;
+  if(gfx)gfx.layer=1;drawPlayer();if(gfx)gfx.layer=2;drawSpellEffect();if(gfx)gfx.layer=3;
   for(const i of actorRenderOrder()){const a=actors[i];if(!a)continue;const used=drawActorOamLimited(a,remaining);remaining-=used;oamDynamicUsed+=used}
-  drawPlayer();drawSpellEffect();drawTerrainEventMarker();drawCombatCollisionDebug();drawWorldAtmosphere();
-  if(bump>0){ctx.strokeStyle='#fff';ctx.strokeRect(PLAYER_SCREEN.x-1,PLAYER_SCREEN.y-1,18,18);bump--}
-  drawEnemyHud();
-  if(noticeTimer>0){ctx.fillStyle='rgba(0,0,0,.76)';ctx.fillRect(6,196,244,16);ctx.fillStyle='#fff';ctx.font='8px monospace';ctx.fillText(notice.slice(0,42),10,207)}
-  ctx.fillStyle='rgba(0,0,0,.86)';ctx.fillRect(0,216,256,24);ctx.fillStyle='#fff';ctx.font='8px monospace';
-  const alive=actors.reduce((n,a)=>n+(a&&a.kind==='combat'?1:0),0),shots=actors.reduce((n,a)=>n+(a&&a.kind==='projectile'?1:0),0);ctx.fillText(`HP ${player.hp}/${player.maxHp} MP ${player.mp}/${player.maxMp} G ${player.gold}`,8,226);ctx.fillText(`${realm().toUpperCase()} ${dayPhase()} XP ${player.xp} DMG ${weaponDamage()} LV ${player.level} S25`,8,236);
-  const badges=[player.poison?'POISON':null,sinkSequenceActive?'SINK':null,magicRainbowActive?'RAINBOW':null,player.equipment.helmet?'H':null,player.equipment.mantle?'M':null,player.equipment.lamp?'L':null,player.equipment.dungeonLit?'LIT':null].filter(Boolean).join(' ');if(badges){ctx.fillStyle='rgba(0,0,0,.76)';ctx.fillRect(172,196,78,16);ctx.fillStyle='#fff';ctx.font='8px monospace';ctx.fillText(badges,176,207)}
-  if(endingActive&&ending.phase===1){const sec=ending.timer/60,alpha=sec<5?0.15+0.08*((frameCounter>>2)&3):sec<10?0.28+0.28*((frameCounter>>2)&1):0.72;ctx.fillStyle=`rgba(0,0,0,${Math.min(.9,alpha)})`;ctx.fillRect(0,0,256,240);if(sec>=5&&sec<10&&((frameCounter>>2)&1)){ctx.fillStyle='rgba(255,255,255,.28)';ctx.fillRect(0,0,256,240)}}
-  if(player.dead&&deathState==='sequence'&&deathTimer<255){ctx.fillStyle='rgba(0,0,0,.58)';ctx.fillRect(61,84,134,29);ctx.fillStyle='#fff';ctx.font='11px monospace';ctx.fillText('VALKYRIE DOWN',78,103)}
-  if(player.dead&&deathState==='gameover'){ctx.fillStyle='rgba(0,0,0,.92)';ctx.fillRect(28,67,200,96);ctx.fillStyle='#fff';ctx.font='16px monospace';ctx.fillText('GAME OVER',84,101);ctx.font='8px monospace';ctx.fillText('START / ENTER → TITLE',73,124);ctx.fillText(hasSave()?'☰ menu → LOAD SAVE available':'No local save yet',69,142)}
+  drawCombatCollisionDebug();drawWorldAtmosphere();
+  if(debug&&player.dead&&deathState==='sequence'&&deathTimer<255){ctx.fillStyle='rgba(0,0,0,.58)';ctx.fillRect(61,84,134,16);ctx.fillStyle='#7CFF91';ctx.font='8px monospace';ctx.fillText(`DEATH · T ${deathTimer}`,92,95)}
   if(debug){
     const p=playerWorld(),s=collisionSample(facing),row=realm()==='dungeon'?((camera.y>>8)-10):(camera.y>>8),col=(camera.x>>8)&15;
     ctx.fillStyle='rgba(0,0,0,.84)';ctx.fillRect(4,4,132,78);ctx.fillStyle='#7CFF91';ctx.font='8px monospace';ctx.fillText(`CAM $${hex(camera.x,4)} $${hex(camera.y,4)}`,8,14);
@@ -1317,14 +1399,21 @@ function drawWorld(){
 function countLocks(a){let n=0;for(const b of a){let v=b;while(v){n+=v&1;v>>=1}}return n}
 
 let acc=0,last=performance.now();
-function loop(t){const dt=Math.min(100,t-last);last=t;acc+=dt;while(acc>=1000/60){update();acc-=1000/60}if(mode==='title')drawTitle();else drawGame();requestAnimationFrame(loop)}
+function renderNow(){
+  const frontOnly=mode==='title'&&front.mode!==FRONT_MODE.ATTRACT,inside=[GAME_MODE.INTERIOR,GAME_MODE.SHOP_TRANSACTION,GAME_MODE.ENTER_INTERIOR].includes(gameMode);
+  const cfg=frontOnly?(front.mode===FRONT_MODE.TITLE?0:1):inside?5:realm()==='dungeon'?2:worldGraphicsGroup?3:2;
+  gfx?.begin({config:cfg,bank:frontOnly?0:(player.equipment.helmet?1:0)|(player.equipment.mantle?2:0),color:frontOnly?(front.mode===FRONT_MODE.CHARACTER?front.choices[2]:0):player.color,poison:!frontOnly&&player.poison,emphasis:spellIs(7)&&(frameCounter&4)?7:0});
+  if(mode==='title')drawTitle();else drawGame();gfx?.flush();
+  const message=document.getElementById('runtimeNotice');if(message)message.textContent=noticeTimer>0?notice:'';
+}
+function loop(t){const dt=Math.min(100,t-last);last=t;acc+=dt;while(acc>=1000/60){update();acc-=1000/60}renderNow();requestAnimationFrame(loop)}
 function start(force=false,traits=null){
   if(mode!=='title'&&!force&&!player.dead)return;mode='game';gameMode=GAME_MODE.GAMEPLAY;modePhase=0;resetInteriorState();camera.x=0x0100;camera.y=0x0800;facing=1;moving=false;bump=0;attackTimer=0;attackHitActive=false;actorPlayerMoveBlockMask=0;
   frameCounter=0xFF;itemSpellMenu.inventoryCursor=0;itemSpellMenu.pendingSpellCast=false;worldClockSubsecond=0;worldClockSecond=0;worldDay=0;worldGraphicsGroup=0;rngState=0;goldBagSpawnLatch=false;sinkSequenceActive=false;hazardTimer=0;magicRainbowActive=false;zuhlStolenPool.fill(0);
   const sign=traits?.sign??player.sign??0,blood=traits?.blood??player.blood??0,color=traits?.color??player.color??0;player.sign=sign%12;player.blood=blood&3;player.color=color&3;player.level=1;player.expThresholdIndex=INITIAL_EXP_CURVE[player.blood];player.passwordSalt=rng8()&7;
   const residue=player.sign&3;if(residue===0){player.maxHp=64;player.maxMp=32}else if(residue===1){player.maxHp=48;player.maxMp=48}else if(residue===2){player.maxHp=32;player.maxMp=64}else{player.maxHp=32+(rng8()&31);player.maxMp=96-player.maxHp}player.hp=player.maxHp;player.mp=player.maxMp;
   player.poison=false;player.terrainMode='land';player.xp=0;player.gold=0;player.equipment.mantle=false;player.equipment.helmet=false;player.equipment.lamp=false;player.equipment.dungeonLit=false;player.selectedSpell=0;player.spellHealTimer=0;player.itemActionFlags=0;resetInventory();player.hurtBlink=0;player.hpUnderflow=false;player.dead=false;
-  resetSpell();endingActive=false;ending.phase=0;ending.timer=0;ending.scene=0;ending.scroll=0;ending.flash=0;pyramidPatchAnchor=null;deathState='alive';deathTimer=0;deathY=PLAYER_SCREEN.y;gameOverTimer=0;serviceMode=null;terrainPatches.clear();terrainPatchOrigins.clear();encounterLocks.surface.fill(0);encounterLocks.dungeon.fill(0);fixedState.fill(0);clearActors();notice='';noticeTimer=0;pressed.clear();keys.clear();closeGameMenu();closeInventoryPanel();closeServicePanel();closeStatusPanel();closeSetupPanel();closePasswordPanel();menuBtn.hidden=false;renderInventoryPanel();
+  resetSpell();endingActive=false;ending.phase=0;ending.timer=0;ending.scene=0;ending.scroll=0;ending.flash=0;pyramidPatchAnchor=null;deathState='alive';deathTimer=0;deathY=PLAYER_SCREEN.y;gameOverTimer=0;serviceMode=null;terrainPatches.clear();terrainPatchOrigins.clear();encounterLocks.surface.fill(0);encounterLocks.dungeon.fill(0);fixedState.fill(0);clearActors();notice='';noticeTimer=0;resetInput();closeGameMenu();closeInventoryPanel();closeServicePanel();closeStatusPanel();closeSetupPanel();closePasswordPanel();menuBtn.hidden=false;renderInventoryPanel();
 }
 function returnToTitle(skipScroll=false){resetInteriorState();player.dead=false;deathState='alive';endingActive=false;closeGameMenu();closeInventoryPanel();closeServicePanel();closeStatusPanel();closeSetupPanel();closePasswordPanel();resetTitleFrontend(skipScroll)}
 function toggleDebug(){debug=!debug;say(`DEBUG ${debug?'ON':'OFF'}`,45);updateMenuStatus()}
@@ -1358,7 +1447,7 @@ function renderStatusPanel(){
   statusBody.innerHTML=`<div class="statusGrid"><div>LEVEL</div><b>${player.level}</b><div>XP</div><b>${player.xp} / ${next}</b><div>HP</div><b>${player.hp} / ${player.maxHp}</b><div>MP</div><b>${player.mp} / ${player.maxMp}</b><div>GOLD</div><b>${player.gold}</b><div>WEAPON</div><b>${ITEM_NAMES[player.equippedItem]||'NONE'} · DMG ${weaponDamage()}</b><div>DEFENSE</div><b>${equipmentSummary()}</b><div>STATUS</div><b>${player.poison?'POISONED':'NORMAL'}${sinkSequenceActive?' · SINK':''}</b><div>ZUHL POOL</div><b>${zuhlStolenPool.filter(Boolean).map(id=>ITEM_NAMES[id]).join(', ')||'EMPTY'}</b><div>TERRAIN</div><b>${player.terrainMode.toUpperCase()}</b><div>WORLD</div><b>${realm().toUpperCase()}</b><div>CLOCK</div><b>${phase}</b><div>ZODIAC</div><b>${ZODIAC_NAMES[player.sign]||'?'}</b><div>BLOOD / COLOR</div><b>${BLOOD_NAMES[player.blood]||'?'} / ${COLOR_NAMES[player.color]||'?'}</b></div><div class="statusNote">Helmet halves actor/projectile Power. Mantle blocks climate hazard. Poison drains 1 HP every 32 frames; Sink deals 16 HP on its timed sequence. Zuhl can steal one inventory item and return a pooled item when defeated. Surface Lamp freezes the current palette family until the next day; dungeon Lamp lights the current dungeon until reset.</div>`;
 }
 function closeStatusPanel(){statusPanel?.classList.remove('open')}
-function openStatusPanel(){if(mode!=='game')return;closeGameMenu();closeInventoryPanel();closeServicePanel();closePasswordPanel();renderStatusPanel();statusPanel.classList.add('open');keys.clear();pressed.clear();setDpadKey(null)}
+function openStatusPanel(){if(mode!=='game')return;closeGameMenu();closeInventoryPanel();closeServicePanel();closePasswordPanel();renderStatusPanel();statusPanel.classList.add('open');resetInput()}
 
 function renderServicePanel(){
   if(!servicePanel||!serviceMode)return;serviceStats.textContent=`HP ${player.hp}/${player.maxHp} · MP ${player.mp}/${player.maxMp} · Gold ${player.gold} · Slots ${inventoryCount()}/8`;
@@ -1373,24 +1462,24 @@ function renderServicePanel(){
   }
 }
 function closeServicePanel(){if(servicePanel)servicePanel.classList.remove('open');serviceMode=null}
-function openShopPanel(){if(mode!=='game'||player.dead)return;closeGameMenu();closeInventoryPanel();closeStatusPanel();activeShopProfile=shopProfileForWorld();serviceMode='shop';renderServicePanel();servicePanel.classList.add('open');keys.clear();pressed.clear();setDpadKey(null);say(`SHOP PROFILE ${activeShopProfile}`,45)}
-function openHotelPanel(){if(mode!=='game'||player.dead)return;closeGameMenu();closeInventoryPanel();closeStatusPanel();serviceMode='hotel';renderServicePanel();servicePanel.classList.add('open');keys.clear();pressed.clear();setDpadKey(null);say('HOTEL · checkpoint service',55)}
+function openShopPanel(){if(mode!=='game'||player.dead)return;closeGameMenu();closeInventoryPanel();closeStatusPanel();activeShopProfile=shopProfileForWorld();serviceMode='shop';renderServicePanel();servicePanel.classList.add('open');resetInput();say(`SHOP PROFILE ${activeShopProfile}`,45)}
+function openHotelPanel(){if(mode!=='game'||player.dead)return;closeGameMenu();closeInventoryPanel();closeStatusPanel();serviceMode='hotel';renderServicePanel();servicePanel.classList.add('open');resetInput();say('HOTEL · checkpoint service',55)}
 
 function closeInventoryPanel(){if(inventoryPanel)inventoryPanel.classList.remove('open')}
-function openInventoryPanel(){if(mode!=='game'||player.dead)return;closeGameMenu();closeServicePanel();closeStatusPanel();renderInventoryPanel();inventoryPanel.classList.add('open');keys.clear();pressed.clear();setDpadKey(null)}
+function openInventoryPanel(){if(mode!=='game'||player.dead)return;closeGameMenu();closeServicePanel();closeStatusPanel();renderInventoryPanel();inventoryPanel.classList.add('open');resetInput()}
 function updateMenuStatus(){const a=globalThis.VAudio?.status?.();menuStatus.textContent=`${mode.toUpperCase()} · ${gameMode} · LV ${player.level} · ${dayPhase()} · ${player.poison?'POISON · ':''}AUDIO ${a?.muted?'MUTE':a?.unlocked?'ON':'TAP'} · SLOTS ${inventoryCount()}/8 · QS ${hasSave()?'YES':'NO'} · HOTEL CP ${hasHotelCheckpoint()?'YES':'NO'}`}
 function closeGameMenu(){gameMenu.classList.remove('open');menuBtn.textContent='☰'}
-function toggleGameMenu(){closeInventoryPanel();closeServicePanel();closeStatusPanel();gameMenu.classList.toggle('open');menuBtn.textContent=gameMenu.classList.contains('open')?'×':'☰';updateMenuStatus();keys.clear();pressed.clear();setDpadKey(null)}
+function toggleGameMenu(){closeInventoryPanel();closeServicePanel();closeStatusPanel();gameMenu.classList.toggle('open');menuBtn.textContent=gameMenu.classList.contains('open')?'×':'☰';updateMenuStatus();resetInput()}
 function closeSetupPanel(){setupPanel?.classList.remove('open')}
 function closePasswordPanel(){passwordPanel?.classList.remove('open')}
-function openSetupPanel(){closeGameMenu();closePasswordPanel();signSelect.innerHTML=ZODIAC_NAMES.map((x,i)=>`<option value="${i}">${x}</option>`).join('');bloodSelect.innerHTML=BLOOD_NAMES.map((x,i)=>`<option value="${i}">${x}</option>`).join('');colorSelect.innerHTML=COLOR_NAMES.map((x,i)=>`<option value="${i}">${x}</option>`).join('');signSelect.value=String(player.sign||0);bloodSelect.value=String(player.blood||0);colorSelect.value=String(player.color||0);setupPanel.classList.add('open');keys.clear();pressed.clear();setDpadKey(null)}
-function openPasswordPanel(){closeGameMenu();closeSetupPanel();closeInventoryPanel();closeServicePanel();closeStatusPanel();passwordInput.value='';checkpointLoad.disabled=!hasHotelCheckpoint();passwordStatus.textContent=hasHotelCheckpoint()?'可輸入 18-symbol password，或用旅館原版 checkpoint Continue。':'可輸入原版 18-symbol password；目前沒有旅館 checkpoint。';passwordPanel.classList.add('open');keys.clear();pressed.clear();setDpadKey(null);setTimeout(()=>passwordInput.focus(),0)}
+function openSetupPanel(){closeGameMenu();closePasswordPanel();signSelect.innerHTML=ZODIAC_NAMES.map((x,i)=>`<option value="${i}">${x}</option>`).join('');bloodSelect.innerHTML=BLOOD_NAMES.map((x,i)=>`<option value="${i}">${x}</option>`).join('');colorSelect.innerHTML=COLOR_NAMES.map((x,i)=>`<option value="${i}">${x}</option>`).join('');signSelect.value=String(player.sign||0);bloodSelect.value=String(player.blood||0);colorSelect.value=String(player.color||0);setupPanel.classList.add('open');resetInput()}
+function openPasswordPanel(){closeGameMenu();closeSetupPanel();closeInventoryPanel();closeServicePanel();closeStatusPanel();passwordInput.value='';checkpointLoad.disabled=!hasHotelCheckpoint();passwordStatus.textContent=hasHotelCheckpoint()?'可輸入 18-symbol password，或用旅館原版 checkpoint Continue。':'可輸入原版 18-symbol password；目前沒有旅館 checkpoint。';passwordPanel.classList.add('open');resetInput();setTimeout(()=>passwordInput.focus(),0)}
 setupClose.addEventListener('click',e=>{e.preventDefault();closeSetupPanel()});passwordClose.addEventListener('click',e=>{e.preventDefault();closePasswordPanel()});statusClose.addEventListener('click',e=>{e.preventDefault();closeStatusPanel()});
 setupStart.addEventListener('click',e=>{e.preventDefault();const traits={sign:Number(signSelect.value),blood:Number(bloodSelect.value),color:Number(colorSelect.value)};closeSetupPanel();clearHotelCheckpoint();start(true,traits)});
 passwordInput.addEventListener('input',()=>{const c=passwordInput.value.toUpperCase().replace(/[^0-9A-Z]/g,'').slice(0,18);if(passwordInput.value!==c)passwordInput.value=c});
 passwordSubmit.addEventListener('click',e=>{e.preventDefault();const d=applyRetailPassword(passwordInput.value);if(d.ok){passwordStatus.textContent=`ACCEPTED · LV ${player.level} · HP ${player.maxHp} · MP ${player.maxMp} · Gold ${player.gold}`;closePasswordPanel();say('PASSWORD ACCEPTED · CONTINUE',100)}else passwordStatus.textContent=`REJECTED · ${d.error}`});
 checkpointLoad.addEventListener('click',e=>{e.preventDefault();const cp=getHotelCheckpoint();if(!cp)return;const d=applyRetailPassword(cp.password,{checkpoint:cp});if(d.ok){closePasswordPanel();gameMode=GAME_MODE.GAME_INIT;modePhase=1;gameInitProgress=0;say('HOTEL CHECKPOINT · GAME INIT',80)}else passwordStatus.textContent=`CHECKPOINT REJECTED · ${d.error}`});
-menuBtn.addEventListener('click',e=>{e.preventDefault();if(mode==='game'&&gameMode===GAME_MODE.ITEM_SPELL_MENU){exitItemSpellMenu();pressed.clear();keys.clear();return}toggleGameMenu()});
+menuBtn.addEventListener('click',e=>{e.preventDefault();if(mode==='game'&&gameMode===GAME_MODE.ITEM_SPELL_MENU){exitItemSpellMenu();resetInput();return}toggleGameMenu()});
 gameMenu.addEventListener('click',e=>{
   const b=e.target.closest('[data-action]');if(!b)return;e.preventDefault();const a=b.dataset.action;
   if(a==='inventory'){closeGameMenu();beginItemSpellMenu();return}
@@ -1426,9 +1515,12 @@ serviceClose.addEventListener('click',e=>{e.preventDefault();closeServicePanel()
 serviceBody.addEventListener('click',e=>{const b=e.target.closest('[data-buy],[data-sell],[data-hotel-rest],[data-password-copy]');if(!b)return;e.preventDefault();if(b.dataset.buy!=null)buyShopItem(Number(b.dataset.buy));else if(b.dataset.sell!=null)sellInventorySlot(Number(b.dataset.sell));else if(b.dataset.hotelRest!=null)hotelRest();else if(b.dataset.passwordCopy!=null){const pw=b.dataset.passwordCopy;globalThis.navigator?.clipboard?.writeText?.(pw);say(`PASSWORD ${pw}`,160)}});
 
 addEventListener('pointerdown',()=>audioUnlock(),{once:true,capture:true});
-addEventListener('keydown',e=>{audioUnlock();
+function editingTarget(e){return !!e.target&&(e.target.isContentEditable||['INPUT','TEXTAREA','SELECT'].includes(e.target.tagName))}
+addEventListener('keydown',e=>{
+  if(editingTarget(e))return;
+  audioUnlock();
   if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space','Tab'].includes(e.code))e.preventDefault();
-  if(e.code==='Enter'){if(player.dead&&deathState==='gameover'){returnToTitle(true);return}if(!e.repeat)pressed.add('Enter');keys.add('Enter');return}
+  if(e.code==='Enter'){if(!e.repeat)pressed.add('Enter');keyboardHeld.add('Enter');keys.add('Enter');return}
   if(e.code==='KeyR'){returnToTitle();return}
   if(e.code==='KeyI'&&!e.repeat){e.preventDefault();pressed.add('KeyI');return}
   if(e.code==='Tab'&&!e.repeat){e.preventDefault();pressed.add('Tab');return}
@@ -1436,26 +1528,36 @@ addEventListener('keydown',e=>{audioUnlock();
   if(e.code==='F5'&&!e.repeat){e.preventDefault();quickSave();return}
   if(e.code==='F9'&&!e.repeat){e.preventDefault();quickLoad();return}
   if(e.code==='F3'&&!e.repeat){e.preventDefault();spawnShooterTest();return}
-  if(!e.repeat)pressed.add(e.code);keys.add(e.code);
+  if(!e.repeat)pressed.add(e.code);keyboardHeld.add(e.code);keys.add(e.code);
 });
-addEventListener('keyup',e=>keys.delete(e.code));
-document.getElementById('startBtn').addEventListener('click',()=>{if(mode==='title'){pressed.add('Enter');return}if(player.dead&&deathState==='gameover')returnToTitle(true)});
+addEventListener('keyup',e=>{keyboardHeld.delete(e.code);releaseInputKey(e.code)});
+document.getElementById('startBtn').addEventListener('click',()=>{if(mode==='title'||(player.dead&&gameMode===GAME_MODE.GAME_OVER))pressed.add('Enter')});
 document.getElementById('continueBtn').addEventListener('click',()=>{if(mode==='title'){front.continueSelected=true;pressed.add('Enter');return}openPasswordPanel()});
 
 for(const b of document.querySelectorAll('[data-key]')){
-  const k=b.dataset.key;
-  const on=e=>{e.preventDefault();if(e.pointerId!=null&&b.setPointerCapture){try{b.setPointerCapture(e.pointerId)}catch{}}if(!keys.has(k))pressed.add(k);keys.add(k);b.classList.add('active')};
-  const off=e=>{e.preventDefault();keys.delete(k);b.classList.remove('active');if(e.pointerId!=null&&b.hasPointerCapture&&b.hasPointerCapture(e.pointerId)){try{b.releasePointerCapture(e.pointerId)}catch{}}};
-  b.addEventListener('pointerdown',on);b.addEventListener('pointerup',off);b.addEventListener('pointercancel',off);b.addEventListener('contextmenu',e=>e.preventDefault());b.addEventListener('dragstart',e=>e.preventDefault());b.addEventListener('selectstart',e=>e.preventDefault());
+  const k=b.dataset.key,pointers=new Set();touchButtonPointers.set(k,pointers);
+  const on=e=>{e.preventDefault();pointers.add(e.pointerId);if(e.pointerId!=null&&b.setPointerCapture){try{b.setPointerCapture(e.pointerId)}catch{}}if(!keys.has(k))pressed.add(k);keys.add(k);b.classList.add('active')};
+  const off=e=>{e.preventDefault();pointers.delete(e.pointerId);releaseInputKey(k);b.classList.toggle('active',pointers.size>0);if(e.pointerId!=null&&b.hasPointerCapture&&b.hasPointerCapture(e.pointerId)){try{b.releasePointerCapture(e.pointerId)}catch{}}};
+  b.addEventListener('pointerdown',on);b.addEventListener('pointerup',off);b.addEventListener('pointercancel',off);b.addEventListener('lostpointercapture',off);b.addEventListener('contextmenu',e=>e.preventDefault());b.addEventListener('dragstart',e=>e.preventDefault());b.addEventListener('selectstart',e=>e.preventDefault());
 }
 
 const dpad=document.getElementById('dpad');let dpadPointer=null,dpadKey=null;
 function setDpadKey(next){
   if(next===dpadKey)return;
-  if(dpadKey)keys.delete(dpadKey);
+  const previous=dpadKey;
   dpadKey=next;
+  if(previous)releaseInputKey(previous);
   for(const b of dpad.querySelectorAll('[data-dir]'))b.classList.toggle('active',b.dataset.dir===next);
   if(next){if(!keys.has(next))pressed.add(next);keys.add(next)}
+}
+function releaseInputKey(k){if(!keyboardHeld.has(k)&&!touchButtonPointers.get(k)?.size&&dpadKey!==k)keys.delete(k)}
+function resetInput(){
+  keys.clear();pressed.clear();keyboardHeld.clear();dpadKey=null;
+  const pointer=dpadPointer;dpadPointer=null;
+  if(pointer!==null){try{dpad.releasePointerCapture(pointer)}catch{}}
+  for(const pointers of touchButtonPointers.values())pointers.clear();
+  for(const b of document.querySelectorAll('[data-key]'))b.classList.remove('active');
+  for(const b of dpad.querySelectorAll('[data-dir]'))b.classList.remove('active');
 }
 function dpadKeyAt(e){
   const r=dpad.getBoundingClientRect(),cx=r.left+r.width/2,cy=r.top+r.height/2,dx=e.clientX-cx,dy=e.clientY-cy;
@@ -1470,12 +1572,12 @@ dpad.addEventListener('pointermove',e=>{if(dpadPointer!==e.pointerId)return;e.pr
 dpad.addEventListener('pointerup',dpadEnd);dpad.addEventListener('pointercancel',dpadEnd);dpad.addEventListener('lostpointercapture',e=>{if(dpadPointer===e.pointerId){setDpadKey(null);dpadPointer=null}});
 dpad.addEventListener('contextmenu',e=>e.preventDefault());dpad.addEventListener('dragstart',e=>e.preventDefault());dpad.addEventListener('selectstart',e=>e.preventDefault());
 
-addEventListener('blur',()=>{keys.clear();pressed.clear();setDpadKey(null)});document.addEventListener('visibilitychange',()=>{if(document.hidden){keys.clear();pressed.clear();setDpadKey(null)}});
+addEventListener('blur',()=>{resetInput()});document.addEventListener('visibilitychange',()=>{if(document.hidden){resetInput()}});
 
 if(globalThis.__VALKYRIE_TEST_MODE__)globalThis.__VALKYRIE_TEST__={
-  start,updateFrontend,resetTitleFrontend,beginAttractFrontend,beginCharacterFrontend,beginPasswordFrontend,castSpell,grantStage12TestKit,grantStage11TestKit,grantStage9TestKit,grantStage8TestKit,grantStage7TestKit,useInventorySlot,beginItemSpellMenu,exitItemSpellMenu,updateItemSpellMenu,resolveRelicActionNow,tryDirectionalWarp,updateSpellEffect,updatePlayer,updateActors,update,updateEnding,player,camera,actors,spell,terrainPatches,fixedState,encounterLocks,quickSave,quickLoad,snapshotGame,restoreSnapshot,buyShopItem,sellInventorySlot,hotelRest,beginDeath,updateDeathSequence,encodeRetailPassword,decodeRetailPassword,applyRetailPassword,applyHotelLevelUps,expThreshold,triggerMagicRainbow,updatePlayerStatusEffects,spawnStage12AITest,cycleStage13MoveMode,spawnStage16CollisionTest,spawnStage17TimingTest,spawnStage18ContactTest,spawnStage19DropTest,spawnStage20HiddenRenderTest,runStage24VisualTest,runStage25TransitionTest,beginMapTransition,updateMapTransition,refreshHotelCheckpoint,clearHotelCheckpoint,getHotelCheckpoint,hasHotelCheckpoint,serviceTerrainPatchStreaming,surfacePaletteFamily,worldBackgroundAtlas,metaComponentCount,playerOamComponentCount,spellOamComponentCount,beginInterior,beginLeaveInterior,updateEnterInteriorTransition,updateLeaveInteriorTransition,updateInterior,updateShopTransaction,serviceHotelRestTick,shopShelfSelection,spawnStage15CollisionTest:spawnStage16CollisionTest,
-  helpers:{highestUnlockedSpell,moveInventoryCursor,moveSpellCursor,itemMenuPressed,itemMenuCancelPressed,weaponDamage,fireballDamageFor,rng8,hasInventoryItem,findInventorySlot,addInventoryItem,clearActors,initActorFromSpawnToken,setPatch2x2,resolveLiveWorld,collisionSample,playerTileSample,starFluteActive,invisibilityActive,buyPrice,sellPrice,shopProfileForWorld,rotate72Right,rotate72Left,transposeEncode,transposeDecode,audioPlay,audioSync,toggleAudio,dayPhase,clockLabel,damageFromActorPower,subtractPlayerHpRetail,spawnEnemyProjectile,maybeBreakDefensiveEquipment,dispatchSpecialTerrain,setPoison,equipmentSummary,rawHazardDamage,hurtBlinkPaletteActive,playerRenderPalette,addGoldRetail,swordRectOverlapsPoint,swordBoxOverlapsPoint,returnOneZuhlStolenItem,zhulStealFirstItem,reverseActorDirection,terrainEventMarker,playerMoveMeta,playerAttackMeta,bodyOverlap,actorDirectionToPlayer,updateDesiredDirection,actorProximityOverlap,actorMovementBlocked,registerActorBodyOverlap,movementAllowed,moveCombatActor,terrainPassableForActor,serviceShizasuLockedContact,enemyHudSegments,spawnFlashMeta,actorRenderOrder,tryPickupItem,beginShopTransaction,hotelBedZone,interiorBlocked,setInteriorPos(x,y){interior.x=x;interior.y=y},setPressed(k){pressed.add(k)},setHeldDirection(v){keys.clear();pressed.clear();const k=['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'][v];if(k)keys.add(k)},setFacing(v){facing=v&3},setServiceMode(v){serviceMode=v},setWorldClock(v){worldClockSecond=v&0x7F;worldClockSubsecond=59},setWorldGraphicsGroup(v){worldGraphicsGroup=v&1},setFrameCounter(v){frameCounter=v&255},setRng(v){rngState=v&255},setAttackHitActive(v){attackHitActive=!!v},setP2AB(v){p2ABHeld=!!v},frontPress(k){pressed.add(k)},setFrontPassword(chars){for(let i=0;i<18;i++)front.password[i]=Number(chars[i])||0}},
-  zuhlStolenPool,
+  start,updateFrontend,resetTitleFrontend,beginAttractFrontend,beginCharacterFrontend,beginPasswordFrontend,castSpell,grantStage12TestKit,grantStage11TestKit,grantStage9TestKit,grantStage8TestKit,grantStage7TestKit,useInventorySlot,beginItemSpellMenu,exitItemSpellMenu,updateItemSpellMenu,resolveRelicActionNow,tryDirectionalWarp,updateSpellEffect,updatePlayer,updateActors,update,updateEnding,player,camera,actors,spell,terrainPatches,fixedState,encounterLocks,quickSave,quickLoad,hasSave,snapshotGame,restoreSnapshot,buyShopItem,sellInventorySlot,hotelRest,beginDeath,updateDeathSequence,updateGameOver,encodeRetailPassword,decodeRetailPassword,applyRetailPassword,applyHotelLevelUps,expThreshold,triggerMagicRainbow,updatePlayerStatusEffects,spawnStage12AITest,cycleStage13MoveMode,spawnStage16CollisionTest,spawnStage17TimingTest,spawnStage18ContactTest,spawnStage19DropTest,spawnStage20HiddenRenderTest,runStage24VisualTest,runStage25TransitionTest,renderNow,beginMapTransition,updateMapTransition,refreshHotelCheckpoint,clearHotelCheckpoint,getHotelCheckpoint,hasHotelCheckpoint,serviceTerrainPatchStreaming,surfacePaletteFamily,worldBackgroundAtlas,metaComponentCount,playerOamComponentCount,spellOamComponentCount,beginInterior,beginLeaveInterior,updateEnterInteriorTransition,updateLeaveInteriorTransition,updateInterior,updateShopTransaction,serviceHotelRestTick,shopShelfSelection,spawnStage15CollisionTest:spawnStage16CollisionTest,
+  helpers:{BUILD_STAGE,passwordGlyphTile,validInventorySlots,validHotelCheckpointShape,validSnapshotShape,highestUnlockedSpell,moveInventoryCursor,moveSpellCursor,itemMenuPressed,itemMenuCancelPressed,weaponDamage,fireballDamageFor,rng8,hasInventoryItem,findInventorySlot,addInventoryItem,clearActors,initActorFromSpawnToken,setPatch2x2,resolveLiveWorld,collisionSample,playerTileSample,starFluteActive,invisibilityActive,buyPrice,sellPrice,shopProfileForWorld,rotate72Right,rotate72Left,transposeEncode,transposeDecode,audioPlay,audioSync,toggleAudio,dayPhase,clockLabel,damageFromActorPower,subtractPlayerHpRetail,spawnEnemyProjectile,maybeBreakDefensiveEquipment,dispatchSpecialTerrain,setPoison,equipmentSummary,rawHazardDamage,hurtBlinkPaletteActive,playerRenderPalette,addGoldRetail,swordRectOverlapsPoint,swordBoxOverlapsPoint,returnOneZuhlStolenItem,zhulStealFirstItem,reverseActorDirection,terrainEventMarker,playerMoveMeta,playerAttackMeta,bodyOverlap,actorDirectionToPlayer,updateDesiredDirection,actorProximityOverlap,actorMovementBlocked,registerActorBodyOverlap,movementAllowed,moveCombatActor,terrainPassableForActor,serviceShizasuLockedContact,enemyHudSegments,retailHpTiles,retailEnemyTiles,retailScoreDigits,drawRetailHud,drawComplexMetaFrom,drawComplexMetaLimited,spawnFlashMeta,actorRenderOrder,tryPickupItem,beginShopTransaction,hotelBedZone,interiorBlocked,setInteriorPos(x,y){interior.x=x;interior.y=y},setPressed(k){pressed.add(k)},setHeldDirection(v){resetInput();const k=['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'][v];if(k)keys.add(k)},setFacing(v){facing=v&3},setServiceMode(v){serviceMode=v},setWorldClock(v){worldClockSecond=v&0x7F;worldClockSubsecond=59},setWorldGraphicsGroup(v){worldGraphicsGroup=v&1},setFrameCounter(v){frameCounter=v&255},setRng(v){rngState=v&255},setAttackHitActive(v){attackHitActive=!!v},setP2AB(v){p2ABHeld=!!v},frontPress(k){pressed.add(k)},setEndingPhase(phase,scene=0,scroll=0){mode='game';endingActive=true;gameMode=GAME_MODE.ENDING;ending.phase=phase;ending.scene=scene;ending.scroll=scroll},setFrontChoices(sign,blood,color,cursor=0){front.choices=[sign%12,blood&3,color&3];front.cursor=cursor%3},setFrontPassword(chars){for(let i=0;i<18;i++)front.password[i]=Number(chars[i])||0}},
+  zuhlStolenPool,gfx,get imagesReady(){return Object.keys(IMAGE_SOURCES).every(k=>img[k]?.complete!==false&&!!img[k])},get imageLoadState(){return{loaded,expected:Object.keys(IMAGE_SOURCES).length,keys:Object.keys(img)}},
   get state(){return{mode,gameMode,modePhase,front:{mode:front.mode,phase:front.phase,titleScroll:front.titleScroll,titleFrame:front.titleFrame,titleSeconds:front.titleSeconds,continueSelected:front.continueSelected,cursor:front.cursor,choices:[...front.choices],passwordCursor:front.passwordCursor,passwordFailures:front.passwordFailures,passwordErrorTimer:front.passwordErrorTimer,attractDirection:front.attractDirection,attractStream:front.attractStream},gameInitProgress,interior:{...interior},endingActive,endingPhase:ending.phase,endingScene:ending.scene,endingScroll:ending.scroll,facing,frameCounter,notice,deathState,deathTimer,gameOverTimer,serviceMode,activeShopProfile,worldClockSecond,worldDay,worldGraphicsGroup,oamDynamicUsed,oamDynamicClipped,dayPhase:dayPhase(),sinkSequenceActive,hazardTimer,magicRainbowActive,actorPlayerMoveBlockMask,itemSpellMenu:{...itemSpellMenu},mapTransition:{...mapTransition},hotelCheckpoint:hotelCheckpoint?JSON.parse(JSON.stringify(hotelCheckpoint)):null,p2ABHeld}}
 };
 })();
