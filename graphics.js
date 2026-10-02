@@ -14,7 +14,12 @@ globalThis.VRenderer=class {
     if(typeof this.ctx.getImageData!=='function'||typeof this.ctx.putImageData!=='function')return;
     const frame=this.ctx.getImageData(0,0,256,240),pixels=frame.data,palette=this.palette(),rgb=this.data.rgb;
     this.claimed.fill(0);this.scanlines.fill(0);this.packets.sort((a,b)=>a.layer-b.layer||a.order-b.order);
-    for(const s of this.packets){
+    // PPUMASK controls the background and sprite left edges independently.
+    // Clear hidden background pixels before OAM composition so an enabled
+    // left-edge sprite can still occupy the universal-color backdrop.
+    const backgroundEnabled=!!(this.mask&8),backgroundLeft=!!(this.mask&2),backdrop=rgb[this.data.palettes[0][0]&63];
+    if(!backgroundEnabled||!backgroundLeft)for(let y=0;y<240;y++)for(let x=0;x<(backgroundEnabled?8:256);x++){const i=(y*256+x)*4;pixels[i]=backdrop[0];pixels[i+1]=backdrop[1];pixels[i+2]=backdrop[2];pixels[i+3]=255}
+    for(const s of (this.mask&16)?this.packets:[]){
       const pattern=(s.tile&1)&&s.tile<64?this.data.playerBanks[this.bank&3]:this.data.sprite[this.config];
       for(let dy=0;dy<16;dy++){
         const y=s.y+dy;if(y>=240)break;if(++this.scanlines[y]>8){this.overflow++;continue}
@@ -24,12 +29,11 @@ globalThis.VRenderer=class {
           const px=(s.attr&64)?7-dx:dx,v=pattern.charCodeAt(s.tile*128+py*8+px)-48,j=y*256+x;
           if(!v||this.claimed[j])continue;this.claimed[j]=1;
           // An earlier behind-background sprite still blocks later OAM sprites.
-          if((s.attr&32)&&this.opaque[j])continue;
+          if((s.attr&32)&&backgroundEnabled&&(x>=8||backgroundLeft)&&this.opaque[j])continue;
           const c=rgb[palette[(s.attr&3)*4+v]&63],i=j*4;pixels[i]=c[0];pixels[i+1]=c[1];pixels[i+2]=c[2];pixels[i+3]=255;
         }
       }
     }
-    if(!(this.mask&2))for(let y=0;y<240;y++)for(let x=0;x<8;x++){const i=(y*256+x)*4;pixels[i]=pixels[i+1]=pixels[i+2]=0;pixels[i+3]=255}
     // The retail lightning effect toggles the PPU color-emphasis bits. Approximate
     // their analog attenuation without adding non-retail translucent rectangles.
     if(this.emphasis)for(let i=0;i<pixels.length;i+=4){pixels[i]=Math.round(pixels[i]*.75);pixels[i+1]=Math.round(pixels[i+1]*.75);pixels[i+2]=Math.round(pixels[i+2]*.75)}
