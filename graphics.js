@@ -2,11 +2,12 @@
 (() => {
 'use strict';
 globalThis.VRenderer=class {
-  constructor(ctx,data){this.ctx=ctx;this.data=data;this.opaque=new Uint8Array(256*240);this.claimed=new Uint8Array(256*240);this.scanlines=new Uint8Array(240);this.packets=[];this.layer=0;this.mask=0x18;this.clipBottom=240;this.clipRight=256;this.config=2;this.bank=0;this.color=0;this.poison=false;this.overflow=0;this.emphasis=0}
-  begin({config=2,bank=0,color=0,poison=false,mask=0x18,emphasis=0}={}){this.config=config;this.bank=bank;this.color=color;this.poison=poison;this.mask=mask;this.emphasis=emphasis;this.layer=0;this.clipBottom=240;this.clipRight=256;this.opaque.fill(0);this.packets.length=0;this.overflow=0}
-  background(config,tile,x,y,height=8,sourceY=0){
+  constructor(ctx,data){this.ctx=ctx;this.data=data;this.opaque=new Uint8Array(256*240);this.colorIndices=new Uint8Array(256*240);this.claimed=new Uint8Array(256*240);this.scanlines=new Uint8Array(240);this.packets=[];this.layer=0;this.mask=0x18;this.clipBottom=240;this.clipRight=256;this.config=2;this.bank=0;this.color=0;this.poison=false;this.overflow=0;this.emphasis=0}
+  begin({config=2,bank=0,color=0,poison=false,mask=0x18,emphasis=0}={}){this.config=config;this.bank=bank;this.color=color;this.poison=poison;this.mask=mask;this.emphasis=emphasis;this.layer=0;this.clipBottom=240;this.clipRight=256;this.opaque.fill(0);this.colorIndices.fill(this.data.palettes[0][0]);this.packets.length=0;this.overflow=0}
+  background(config,tile,x,y,height=8,sourceY=0,pal=0,family=0){
     const pattern=this.data.background[config];x=Math.round(x);y=Math.round(y);
-    for(let dy=0;dy<height;dy++){const yy=y+dy;if(yy<0||yy>=this.clipBottom||yy>=240)continue;for(let dx=0;dx<8;dx++){const xx=x+dx;if(xx<0||xx>=this.clipRight||xx>=256)continue;this.opaque[yy*256+xx]=pattern.charCodeAt((tile&255)*64+(dy+sourceY)*8+dx)!==48?1:0}}
+    const colors=this.data.backgroundPalettes?.[config]?.[family]||this.data.palettes[0];
+    for(let dy=0;dy<height;dy++){const yy=y+dy;if(yy<0||yy>=this.clipBottom||yy>=240)continue;for(let dx=0;dx<8;dx++){const xx=x+dx;if(xx<0||xx>=this.clipRight||xx>=256)continue;const v=pattern.charCodeAt((tile&255)*64+(dy+sourceY)*8+dx)-48,j=yy*256+xx;this.opaque[j]=v?1:0;this.colorIndices[j]=colors[v?(pal&3)*4+v:0]&63}}
   }
   sprite(tile,attr,x,y){this.packets.push({tile:tile&255,attr:attr&255,x:Math.round(x)&255,y:(Math.round(y)&255)+1,layer:this.layer,order:this.packets.length})}
   palette(){const p=this.data.palettes[1].slice();p[2]=this.poison?0x23:0x36;p[3]=this.data.colors[this.color&3];return p}
@@ -18,7 +19,7 @@ globalThis.VRenderer=class {
     // Clear hidden background pixels before OAM composition so an enabled
     // left-edge sprite can still occupy the universal-color backdrop.
     const backgroundEnabled=!!(this.mask&8),backgroundLeft=!!(this.mask&2),backdrop=rgb[this.data.palettes[0][0]&63];
-    if(!backgroundEnabled||!backgroundLeft)for(let y=0;y<240;y++)for(let x=0;x<(backgroundEnabled?8:256);x++){const i=(y*256+x)*4;pixels[i]=backdrop[0];pixels[i+1]=backdrop[1];pixels[i+2]=backdrop[2];pixels[i+3]=255}
+    if(!backgroundEnabled||!backgroundLeft)for(let y=0;y<240;y++)for(let x=0;x<(backgroundEnabled?8:256);x++){const j=y*256+x,i=j*4;this.colorIndices[j]=this.data.palettes[0][0];pixels[i]=backdrop[0];pixels[i+1]=backdrop[1];pixels[i+2]=backdrop[2];pixels[i+3]=255}
     for(const s of (this.mask&16)?this.packets:[]){
       const pattern=(s.tile&1)&&s.tile<64?this.data.playerBanks[this.bank&3]:this.data.sprite[this.config];
       for(let dy=0;dy<16;dy++){
@@ -30,12 +31,14 @@ globalThis.VRenderer=class {
           if(!v||this.claimed[j])continue;this.claimed[j]=1;
           // An earlier behind-background sprite still blocks later OAM sprites.
           if((s.attr&32)&&backgroundEnabled&&(x>=8||backgroundLeft)&&this.opaque[j])continue;
-          const c=rgb[palette[(s.attr&3)*4+v]&63],i=j*4;pixels[i]=c[0];pixels[i+1]=c[1];pixels[i+2]=c[2];pixels[i+3]=255;
+          const color=palette[(s.attr&3)*4+v]&63,c=rgb[color],i=j*4;this.colorIndices[j]=color;pixels[i]=c[0];pixels[i+1]=c[1];pixels[i+2]=c[2];pixels[i+3]=255;
         }
       }
     }
-    // The retail lightning effect toggles the PPU color-emphasis bits. Approximate
-    // their analog attenuation without adding non-retail translucent rectangles.
+    // PPUMASK grayscale selects only the high two palette-index bits. Keep
+    // original indices: multiple NES black indices share RGB but differ here.
+    if(this.mask&1)for(let j=0;j<this.colorIndices.length;j++){const c=rgb[this.colorIndices[j]&0x30],i=j*4;pixels[i]=c[0];pixels[i+1]=c[1];pixels[i+2]=c[2]}
+    // Color emphasis, when requested, remains an analog-output approximation.
     if(this.emphasis)for(let i=0;i<pixels.length;i+=4){pixels[i]=Math.round(pixels[i]*.75);pixels[i+1]=Math.round(pixels[i+1]*.75);pixels[i+2]=Math.round(pixels[i+2]*.75)}
     this.ctx.putImageData(frame,0,0);
   }

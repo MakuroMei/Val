@@ -17,13 +17,14 @@ const front={mode:FRONT_MODE.TITLE,phase:0,titleScroll:0,titleFrame:0,titleSecon
 let gameInitProgress=0;
 const mapTransition={pixelsRemaining:0,streamX:0,hudSettle:0,reason:'',targetRealm:'surface'};
 let p2ABHeld=false;
-const interior={type:null,x:0xD0,y:0xA0,progress:0,settle:0,shopProfile:0,sellCursor:0,restActive:false,restTick:0,restSpent:0,restLevels:0,levelUpDelay:0};
+const interior={type:null,x:0xD0,y:0xA0,progress:0,settle:0,shopProfile:0,sellCursor:0,restActive:false,restTick:0,restSpent:0,restLevels:0,levelUpDelay:0,hotelDisplay:null};
 const camera={x:0x0100,y:0x0800};
 const PLAYER_SCREEN={x:0x78,y:0x57};
 let facing=1, moving=false, bump=0, attackTimer=0, attackHitActive=false;
 let actorPlayerMoveBlockMask=0;
 let worldClockSubsecond=0, worldClockSecond=0, worldDay=0;
 let worldGraphicsGroup=0; // bit 2 of retail DayNightGraphicsState: 0=A, 1=B
+let loadedSurfacePalette=1; // actual uploaded surface palette; the Lamp flag only blocks clock refresh
 let oamDynamicUsed=0,oamDynamicClipped=0;
 const player={hp:0x40,maxHp:0x40,mp:0x20,maxMp:0x20,poison:false,terrainMode:'land',xp:0,gold:0,level:1,expThresholdIndex:2,sign:0,blood:0,color:0,passwordSalt:0,equippedItem:0x0B,equippedSlot:0,inventory:Array.from({length:8},()=>({id:0,value:0})),equipment:{mantle:false,helmet:false,lamp:false,dungeonLit:false},selectedSpell:0,spellHealTimer:0,itemActionFlags:0,hurtBlink:0,hpUnderflow:false,dead:false};
 let notice='', noticeTimer=0, hudEnemy=null;
@@ -173,6 +174,25 @@ function optionalBooleans(o,names){return names.every(k=>o[k]===undefined||typeo
 function validEquipmentShape(o){return o===undefined||(recordShape(o)&&optionalBooleans(o,['mantle','helmet','lamp','dungeonLit']))}
 const SAVE_GAME_MODES=[GAME_MODE.GAMEPLAY,GAME_MODE.GAME_INIT,GAME_MODE.ITEM_SPELL_MENU,GAME_MODE.MAP_TRANSITION,GAME_MODE.ENTER_INTERIOR,GAME_MODE.INTERIOR,GAME_MODE.SHOP_TRANSACTION,GAME_MODE.LEAVE_INTERIOR];
 function validHotelCheckpointShape(o){return recordShape(o)&&o.v===1&&typeof o.password==='string'&&/^[0-9A-Z]{18}$/.test(o.password)&&validInventorySlots(o.inventory)&&integerIn(o.equippedItem,0,ITEM_NAMES.length-1)&&integerIn(o.equippedSlot,-1,7)&&validEquipmentShape(o.equipment)}
+function validHotelDisplayRecord(q){
+  if(!recordShape(q))return false;
+  if(q.type==='threshold')return integerIn(q.index,0,255)&&integerIn(q.level,0,127);
+  if(q.type==='hp')return integerIn(q.value,0,1023)&&integerIn(q.max,1,1023)&&q.value<=q.max;
+  if(q.type==='mp')return integerIn(q.value,0,1023)&&integerIn(q.max,0,1023)&&q.value<=q.max;
+  if(q.type==='spell')return integerIn(q.highest,0,7);
+  return q.type==='password'&&typeof q.value==='string'&&/^[0-9A-Z]{18}$/.test(q.value);
+}
+function validHotelDisplayShape(q){
+  if(q===undefined||q===null)return true;
+  if(!recordShape(q)||q.v!==1||!recordShape(q.packed))return false;
+  const p=q.packed;
+  if(![['gold',0,61430],['xp',0,9999999],['maxHp',1,1023],['maxMp',0,1023],['sign',0,15],['blood',0,3],['color',0,3],['level',0,127],['expThresholdIndex',0,255],['passwordSalt',0,7],['passwordFlags',0,31]].every(([k,min,max])=>integerIn(p[k],min,max)))return false;
+  if(q.threshold!==null&&(!recordShape(q.threshold)||!validHotelDisplayRecord({...q.threshold,type:'threshold'})))return false;
+  for(const type of ['hp','mp'])if(q[type]!==null&&(!recordShape(q[type])||!validHotelDisplayRecord({...q[type],type})))return false;
+  if(q.highestSpell!==null&&!integerIn(q.highestSpell,0,7))return false;
+  if(q.password!==null&&(typeof q.password!=='string'||!/^[0-9A-Z]{18}$/.test(q.password)))return false;
+  return q.pending===null||validHotelDisplayRecord(q.pending);
+}
 function validSnapshotShape(o){
   if(!recordShape(o)||![1,2,3].includes(o.v)||!recordShape(o.player)||!validInventorySlots(o.player.inventory))return false;
   const p=o.player,c=o.camera||{};
@@ -186,9 +206,9 @@ function validSnapshotShape(o){
   if(o.worldClockSubsecond!==undefined&&!integerIn(o.worldClockSubsecond,0,59))return false;if(o.worldClockSecond!==undefined&&!integerIn(o.worldClockSecond,0,127))return false;
   if(o.gameMode!==undefined&&!SAVE_GAME_MODES.includes(o.gameMode))return false;if(o.modePhase!==undefined&&!integerIn(o.modePhase,0,2))return false;
   if(o.endingActive!==undefined&&o.endingActive!==false)return false;
-  if(!optionalFields(o,[['worldDay',0,Number.MAX_SAFE_INTEGER],['worldGraphicsGroup',0,1],['rngState',0,255],['gameInitProgress',0,256]])||!optionalBooleans(o,['goldBagSpawnLatch'])||!optionalBooleans(p,['poison']))return false;
+  if(!optionalFields(o,[['worldDay',0,Number.MAX_SAFE_INTEGER],['worldGraphicsGroup',0,1],['loadedSurfacePalette',0,3],['rngState',0,255],['gameInitProgress',0,256]])||!optionalBooleans(o,['goldBagSpawnLatch'])||!optionalBooleans(p,['poison']))return false;
   if(o.gameInitProgress!==undefined&&o.gameInitProgress%8!==0)return false;
-  if(o.interior!==undefined){const q=o.interior;if(!recordShape(q)||![null,'shop','hotel'].includes(q.type)||!optionalFields(q,[['x',0,255],['y',0,255],['progress',0,256],['settle',0,4],['shopProfile',0,3],['sellCursor',0,7],['restTick',0,Number.MAX_SAFE_INTEGER],['restSpent',0,Number.MAX_SAFE_INTEGER],['restLevels',0,Number.MAX_SAFE_INTEGER],['levelUpDelay',0,0xC0]])||!optionalBooleans(q,['restActive']))return false}
+  if(o.interior!==undefined){const q=o.interior;if(!recordShape(q)||![null,'shop','hotel'].includes(q.type)||!optionalFields(q,[['x',0,255],['y',0,255],['progress',0,256],['settle',0,4],['shopProfile',0,3],['sellCursor',0,7],['restTick',0,Number.MAX_SAFE_INTEGER],['restSpent',0,Number.MAX_SAFE_INTEGER],['restLevels',0,Number.MAX_SAFE_INTEGER],['levelUpDelay',0,0xC0]])||!optionalBooleans(q,['restActive'])||!validHotelDisplayShape(q.hotelDisplay))return false}
   if([GAME_MODE.ENTER_INTERIOR,GAME_MODE.INTERIOR,GAME_MODE.LEAVE_INTERIOR,GAME_MODE.SHOP_TRANSACTION].includes(o.gameMode)&&(!o.interior||!['shop','hotel'].includes(o.interior.type)))return false;
   if(o.gameMode===GAME_MODE.SHOP_TRANSACTION&&o.interior.type!=='shop')return false;
   if(o.mapTransition!==undefined){const q=o.mapTransition;if(!recordShape(q)||!optionalFields(q,[['pixelsRemaining',0,255],['streamX',-4096,8192],['hudSettle',0,4]])||(q.reason!==undefined&&typeof q.reason!=='string')||(q.targetRealm!==undefined&&!['surface','dungeon'].includes(q.targetRealm)))return false}
@@ -216,7 +236,7 @@ function restoreHotelCheckpointInventory(cp){
   player.equipment.mantle=!!cp.equipment?.mantle;player.equipment.helmet=!!cp.equipment?.helmet;player.equipment.lamp=false;player.equipment.dungeonLit=false;return true;
 }
 function snapshotGame(){
-  return {v:3,camera:{x:camera.x,y:camera.y},facing,frameCounter,worldClockSubsecond,worldClockSecond,worldDay,worldGraphicsGroup,rngState,goldBagSpawnLatch,zuhlStolenPool:[...zuhlStolenPool],gameMode,modePhase,gameInitProgress,itemSpellMenu:{inventoryCursor:itemSpellMenu.inventoryCursor,pendingSpellCast:itemSpellMenu.pendingSpellCast},interior:{type:interior.type,x:interior.x,y:interior.y,progress:interior.progress,settle:interior.settle,shopProfile:interior.shopProfile,sellCursor:interior.sellCursor,restActive:interior.restActive,restTick:interior.restTick,restSpent:interior.restSpent,restLevels:interior.restLevels,levelUpDelay:interior.levelUpDelay},
+  return {v:3,camera:{x:camera.x,y:camera.y},facing,frameCounter,worldClockSubsecond,worldClockSecond,worldDay,worldGraphicsGroup,loadedSurfacePalette,rngState,goldBagSpawnLatch,zuhlStolenPool:[...zuhlStolenPool],gameMode,modePhase,gameInitProgress,itemSpellMenu:{inventoryCursor:itemSpellMenu.inventoryCursor,pendingSpellCast:itemSpellMenu.pendingSpellCast},interior:{type:interior.type,x:interior.x,y:interior.y,progress:interior.progress,settle:interior.settle,shopProfile:interior.shopProfile,sellCursor:interior.sellCursor,restActive:interior.restActive,restTick:interior.restTick,restSpent:interior.restSpent,restLevels:interior.restLevels,levelUpDelay:interior.levelUpDelay,hotelDisplay:interior.hotelDisplay?JSON.parse(JSON.stringify(interior.hotelDisplay)):null},
     player:{hp:player.hp,maxHp:player.maxHp,mp:player.mp,maxMp:player.maxMp,poison:player.poison,terrainMode:player.terrainMode,xp:player.xp,gold:player.gold,level:player.level,expThresholdIndex:player.expThresholdIndex,sign:player.sign,blood:player.blood,color:player.color,passwordSalt:player.passwordSalt,equippedItem:player.equippedItem,equippedSlot:player.equippedSlot,inventory:player.inventory.map(x=>({id:x.id,value:x.value})),equipment:{...player.equipment},selectedSpell:player.selectedSpell},
     terrainPatches:[],mapTransition:{...mapTransition},encounterSurface:[...encounterLocks.surface],encounterDungeon:[...encounterLocks.dungeon],fixedState:[...fixedState],endingActive};
 }
@@ -229,8 +249,13 @@ function restoreSnapshot(o){
   if(!validSnapshotShape(o))throw Error('bad save');
   mode='game';camera.x=clamp(o.camera?.x??0x100,0,4095);camera.y=clamp(o.camera?.y??0x800,0,5119);facing=(Number(o.facing)||0)&3;gameMode=Object.values(GAME_MODE).includes(o.gameMode)?o.gameMode:GAME_MODE.GAMEPLAY;modePhase=Number(o.modePhase)||0;Object.assign(interior,{type:o.interior?.type||null,x:o.interior?.x??0xD0,y:o.interior?.y??0xA0,progress:Number(o.interior?.progress)||0,settle:Number(o.interior?.settle)||0,shopProfile:Number(o.interior?.shopProfile)||0,sellCursor:Number(o.interior?.sellCursor)||0,restActive:!!o.interior?.restActive,restTick:Number(o.interior?.restTick)||0,restSpent:Number(o.interior?.restSpent)||0,restLevels:Number(o.interior?.restLevels)||0,levelUpDelay:o.interior?.levelUpDelay??0});Object.assign(mapTransition,{pixelsRemaining:Number(o.mapTransition?.pixelsRemaining)||0,streamX:Number(o.mapTransition?.streamX)||0,hudSettle:Number(o.mapTransition?.hudSettle)||0,reason:o.mapTransition?.reason||'',targetRealm:o.mapTransition?.targetRealm||'surface'});
   frameCounter=Number(o.frameCounter)&255;worldClockSubsecond=Number(o.worldClockSubsecond)||0;worldClockSecond=Number(o.worldClockSecond)||0;worldDay=Number(o.worldDay)||0;worldGraphicsGroup=Number(o.worldGraphicsGroup)&1;rngState=Number(o.rngState)&255;goldBagSpawnLatch=!!o.goldBagSpawnLatch;zuhlStolenPool.fill(0);(o.zuhlStolenPool||[]).slice(0,8).forEach((v,i)=>zuhlStolenPool[i]=Number(v)&0x1F);
+  // Older snapshots encoded Lamp as the active palette and have no separate latch.
+  loadedSurfacePalette=o.loadedSurfacePalette??(o.player.equipment?.lamp?3:worldDay===0&&worldClockSecond<8?1:paletteFamilyForPhase());
   Object.assign(player,{hp:o.player.hp,maxHp:o.player.maxHp,mp:o.player.mp,maxMp:o.player.maxMp,poison:!!o.player.poison,terrainMode:o.player.terrainMode||'land',xp:o.player.xp||0,gold:o.player.gold||0,level:o.player.level??1,expThresholdIndex:o.player.expThresholdIndex??2,sign:o.player.sign??0,blood:o.player.blood??0,color:o.player.color??0,passwordSalt:o.player.passwordSalt??0,equippedItem:o.player.equippedItem||0,equippedSlot:Number.isInteger(o.player.equippedSlot)?o.player.equippedSlot:-1,selectedSpell:o.player.selectedSpell||0});
   player.inventory=Array.from({length:8},(_,i)=>({id:Number(o.player.inventory[i]?.id)||0,value:Number(o.player.inventory[i]?.value)||0}));player.equipment={mantle:!!o.player.equipment?.mantle,helmet:!!o.player.equipment?.helmet,lamp:!!o.player.equipment?.lamp,dungeonLit:!!o.player.equipment?.dungeonLit};player.itemActionFlags=0;player.spellHealTimer=0;player.hurtBlink=0;player.hpUnderflow=false;player.dead=false;
+  // Older snapshots lack the uploaded hotel HUD state; seed their first frame
+  // from restored values, then resume the original sixteen-frame refresh phases.
+  interior.hotelDisplay=o.interior?.hotelDisplay?JSON.parse(JSON.stringify(o.interior.hotelDisplay)):interior.type==='hotel'?createHotelDisplay(true):null;
   terrainPatches.clear();terrainPatchOrigins.clear(); // retail VRAM terrain patches do not survive a reconstructed nametable / checkpoint load
   encounterLocks.surface.fill(0);encounterLocks.dungeon.fill(0);(o.encounterSurface||[]).slice(0,20).forEach((v,i)=>encounterLocks.surface[i]=v);(o.encounterDungeon||[]).slice(0,20).forEach((v,i)=>encounterLocks.dungeon[i]=v);fixedState.fill(0);(o.fixedState||[]).slice(0,0x80).forEach((v,i)=>fixedState[i]=v&0xFE);
   gameInitProgress=o.gameInitProgress??0;itemSpellMenu.inventoryCursor=o.itemSpellMenu?.inventoryCursor??0;itemSpellMenu.pendingSpellCast=!!o.itemSpellMenu?.pendingSpellCast;itemSpellMenu.openedFrame=frame;
@@ -242,10 +267,10 @@ function shopProfileForWorld(){return SHOP_PROFILE_BY_X_HIGH[(playerWorld().x>>8
 function buyShopItem(id){const price=buyPrice(id);if(player.gold<price){audioPlay(SFX.ERROR);say(`SHOP · NEED ${price} GOLD`,70);return false}if(!addInventoryItem(id)){audioPlay(SFX.ERROR);say('SHOP · INVENTORY FULL',70);return false}player.gold-=price;audioPlay(SFX.MENU);say(`BOUGHT ${ITEM_NAMES[id]} · -${price} G`,75);renderServicePanel();return true}
 function sellInventorySlot(i){const slot=player.inventory[i];if(!slot||!slot.id){audioPlay(SFX.ERROR);say('SELL · EMPTY SLOT',55);return false}const id=slot.id,price=sellPrice(id);clearInventorySlot(i);const added=addGoldRetail(price);audioPlay(SFX.GOLD);say(`SOLD ${ITEM_NAMES[id]} · +${added} G`,75);renderServicePanel();return true}
 function expThreshold(idx){return idx<EXP_THRESHOLDS.length?EXP_THRESHOLDS[idx]:Math.max(0,(idx-16)*10000)}
-function hotelNextLevelTiles(){
+function hotelNextLevelTiles(index=player.expThresholdIndex,level=player.level){
   // $CA7B-$CAC4 writes five threshold/10 digits followed by two zeroes.
-  const digits=String(Math.floor(expThreshold(player.expThresholdIndex)/10)).padStart(5,'0').slice(-5).split('').map(Number);
-  return digits.concat([0,0,0x26,0x15,0x8B],String(player.level).padStart(2,'0').slice(-2).split('').map(Number));
+  const digits=String(Math.floor(expThreshold(index)/10)).padStart(5,'0').slice(-5).split('').map(Number);
+  return digits.concat([0,0,0x26,0x15,0x8B],String(level).padStart(2,'0').slice(-2).split('').map(Number));
 }
 function advanceExpCurve(){
   if(player.level>=10){player.expThresholdIndex++;return 1}
@@ -265,10 +290,10 @@ function rotate72Right(bytes,n){const a=bytes.slice(0,9);for(let k=0;k<n;k++){co
 function rotate72Left(bytes,n){const a=bytes.slice(0,9);for(let k=0;k<n;k++){const o=a.slice();for(let i=0;i<9;i++){const next=i<8?o[i+1]:o[0];a[i]=(((o[i]<<1)&255)|((next>>7)&1))&255}}return a}
 function transposeEncode(payload){const p=payload.slice(),chars=Array(18).fill(0);for(let plane=0;plane<5;plane++)for(let x=0;x<8;x++){let c=p[0]&1;p[0]>>=1;for(let j=1;j<5;j++){const nc=p[j]&1;p[j]=(p[j]>>1)|(c<<7);c=nc}chars[x]=((chars[x]<<1)&255)|c}for(let plane=0;plane<5;plane++)for(let x=0;x<8;x++){let c=p[5]&1;p[5]>>=1;for(let j=6;j<10;j++){const nc=p[j]&1;p[j]=(p[j]>>1)|(c<<7);c=nc}chars[9+x]=((chars[9+x]<<1)&255)|c}const sum=chars.slice(0,8).concat(chars.slice(9,17)).reduce((a,b)=>a+b,0);chars[8]=sum&31;chars[17]=(sum>>5)&31;return chars}
 function transposeDecode(chars){const q=chars.slice(),p=Array(13).fill(0);for(let outer=0;outer<8;outer++)for(let x=0;x<8;x++){let c=q[7]&1;q[7]>>=1;for(let j=6;j>=0;j--){const nc=q[j]&1;q[j]=(q[j]>>1)|(c<<7);c=nc}p[x]=(p[x]>>1)|(c<<7)}for(let outer=0;outer<8;outer++)for(let x=0;x<8;x++){let c=q[16]&1;q[16]>>=1;for(let j=15;j>=9;j--){const nc=q[j]&1;q[j]=(q[j]>>1)|(c<<7);c=nc}p[5+x]=(p[5+x]>>1)|(c<<7)}return p.slice(0,10)}
-function encodeRetailPassword(){
-  const gold10=Math.floor(clamp(player.gold,0,60000)/10),xp10=Math.floor(Math.max(0,player.xp)/10),maxHp=clamp(player.maxHp|0,1,999),maxMp=clamp(player.maxMp|0,0,999),salt=player.passwordSalt&7;
-  let flags=0;PASSWORD_PERSIST_IDS.forEach((id,i)=>{if(hasInventoryItem(id))flags|=1<<i});
-  const p=Array(10).fill(0);p[0]=gold10&255;p[1]=((gold10>>8)&31)|(((maxHp>>8)&3)<<5)|(((maxMp>>8)&1)<<7);p[2]=xp10&255;p[3]=(xp10>>8)&255;p[4]=maxHp&255;p[5]=(player.sign&15)|((player.blood&3)<<4)|((player.color&3)<<6);p[6]=(flags&31)|(((maxMp>>9)&1)<<5)|((player.level&3)<<6);p[7]=maxMp&255;p[8]=player.expThresholdIndex&255;p[9]=((player.level<<1)&0xF8)|salt;
+function encodeRetailPassword(source=player){
+  const gold10=Math.floor(clamp(source.gold,0,60000)/10),xp10=Math.floor(Math.max(0,source.xp)/10),maxHp=clamp(source.maxHp|0,1,999),maxMp=clamp(source.maxMp|0,0,999),salt=source.passwordSalt&7;
+  let flags=source.passwordFlags;if(flags===undefined){flags=0;PASSWORD_PERSIST_IDS.forEach((id,i)=>{if(source.inventory?.some(slot=>slot.id===id))flags|=1<<i})}
+  const p=Array(10).fill(0);p[0]=gold10&255;p[1]=((gold10>>8)&31)|(((maxHp>>8)&3)<<5)|(((maxMp>>8)&1)<<7);p[2]=xp10&255;p[3]=(xp10>>8)&255;p[4]=maxHp&255;p[5]=(source.sign&15)|((source.blood&3)<<4)|((source.color&3)<<6);p[6]=(flags&31)|(((maxMp>>9)&1)<<5)|((source.level&3)<<6);p[7]=maxMp&255;p[8]=source.expThresholdIndex&255;p[9]=((source.level<<1)&0xF8)|salt;
   const r=rotate72Right(p,salt+1);for(let i=0;i<9;i++)p[i]=r[i];const chars=transposeEncode(p);return chars.map(x=>PASSWORD_ALPHABET[x]||'?').join('');
 }
 function passwordCharsFromString(str){const clean=String(str||'').toUpperCase().replace(/[^0-9A-Z]/g,'');if(clean.length!==18)return null;return [...clean].map(ch=>PASSWORD_ALPHABET.indexOf(ch))}
@@ -350,7 +375,7 @@ function useInventorySlot(i){
   if(mode!=='game'||player.dead)return;
   const slot=player.inventory[i];if(!slot||!slot.id)return;
   const id=slot.id,name=ITEM_NAMES[id]||`Item $${hex(id)}`;
-  if(id===0x01||id===0x02){if(realm()==='dungeon'){player.equipment.dungeonLit=true;say(`${name} · DUNGEON LIT`,70)}else{player.equipment.lamp=true;say(`${name} · SURFACE PALETTE LOCKED UNTIL NEW DAY`,90)}consumeInventorySlot(i)}
+  if(id===0x01||id===0x02){if(realm()==='dungeon'){player.equipment.dungeonLit=true;say(`${name} · DUNGEON LIT`,70)}else{player.equipment.lamp=true;loadedSurfacePalette=3;say(`${name} · SURFACE PALETTE LOCKED UNTIL NEW DAY`,90)}consumeInventorySlot(i)}
   else if(id===0x03||id===0x04){player.hp=Math.min(player.maxHp,player.hp+32);say(`${name} · +32 HP · ${player.hp}/${player.maxHp}`,70);consumeInventorySlot(i)}
   else if(id===0x05||id===0x06){setPoison(false);say(`${name} · POISON CLEARED`,70);consumeInventorySlot(i)}
   else if(id===0x07){player.itemActionFlags|=1;consumeInventorySlot(i);if(!resolveKeyActionNow())say('KEY ACTION · no chest/gate at current position',70);player.itemActionFlags=0}
@@ -435,7 +460,7 @@ function updateMapTransition(){
   moving=false;
   if(modePhase===0){audioPlay(SFX.WARP);mapTransition.streamX=camera.x-8;mapTransition.pixelsRemaining=0;mapTransition.hudSettle=0;terrainPatches.clear();terrainPatchOrigins.clear();modePhase=1;return}
   if(modePhase===1){mapTransition.streamX+=8;mapTransition.pixelsRemaining=(mapTransition.pixelsRemaining-8)&255;if(mapTransition.pixelsRemaining!==0)return;modePhase=2;mapTransition.hudSettle=0}
-  if(modePhase===2){if(++mapTransition.hudSettle<4)return;mapTransition.hudSettle=0;facing=1;gameMode=GAME_MODE.GAMEPLAY;modePhase=0;player.terrainMode='land';say(`${mapTransition.reason} · HUD STABLE`,55)}
+  if(modePhase===2){if(++mapTransition.hudSettle<4)return;reloadWorldPalette();mapTransition.hudSettle=0;facing=1;gameMode=GAME_MODE.GAMEPLAY;modePhase=0;player.terrainMode='land';say(`${mapTransition.reason} · HUD STABLE`,55)}
 }
 function tryDirectionalWarp(){
   const face=collisionSample(facing),under=playerTileSample(),s=face.tile===0xF7?face:under;if(s.tile!==0xF7||requestedDir()>=0)return false;
@@ -474,15 +499,22 @@ function serviceTerrainPatchStreaming(){
   for(const k of [...terrainPatches.keys()]){const o=terrainPatchOrigins.get(k);if(!o||Math.abs(camera.x-o.cx)>=256||Math.abs(camera.y-o.cy)>=216){terrainPatches.delete(k);terrainPatchOrigins.delete(k)}}
 }
 
-function surfacePaletteFamily(){if(player.dead&&deathTimer>=123)return 0;if(player.equipment.lamp)return 3;const p=dayPhase();return p==='DAY'||(worldDay===0&&worldClockSecond<8)?1:p==='NIGHT'?2:0}
+function paletteFamilyForPhase(phase=null){const p=phase??dayPhase();return p==='DAY'||p===1?1:p==='NIGHT'||p===3?2:0}
+function reloadWorldPalette(phase=null){
+  // LoadWorldPalette ($D5A7) ignores EquipmentFlags: a transition can replace
+  // Lamp colors while leaving its automatic-refresh lock active until the next day.
+  if(realm()==='dungeon'){player.equipment.dungeonLit=false;return 0}
+  loadedSurfacePalette=paletteFamilyForPhase(phase);return loadedSurfacePalette;
+}
+function surfacePaletteFamily(){return loadedSurfacePalette}
 function worldBackgroundAtlas(){
-  if(realm()==='dungeon')return{atlas:img.dungeon||img.world,row:endingActive&&ending.phase===1&&ending.timer>0?2+(player.equipment.dungeonLit?4:0)+(((frameCounter-Math.max(0,ending.timer-299))&12)>>2):player.equipment.dungeonLit&&!player.dead?1:0};
+  if(realm()==='dungeon')return{atlas:img.dungeon||img.world,row:endingActive&&ending.phase===1&&ending.timer>0?2+(player.equipment.dungeonLit?4:0)+(((frameCounter-Math.max(0,ending.timer-299))&12)>>2):player.equipment.dungeonLit?1:0};
   return{atlas:(worldGraphicsGroup?img.worldB:img.worldA)||img.world,row:endingActive&&ending.phase===1&&ending.timer>0?4+surfacePaletteFamily()*4+(((frameCounter-Math.max(0,ending.timer-299))&12)>>2):surfacePaletteFamily()};
 }
 function drawBgTile(atlas,tile,pal,x,y,family=0){
   x=Math.round(x);y=Math.round(y);const top=Math.max(0,-y),bottom=Math.min(8,(gfx?.clipBottom??240)-y),h=bottom-top,w=Math.min(8,(gfx?.clipRight??256)-x);if(h<=0||w<=0||x+8<=0)return;
-  const cfg=atlas===img.frontend?1:atlas===img.title?0:atlas===img.interior?5:atlas===img.worldB?3:2;
-  gfx?.background(cfg,tile,x,y+top,h,top);
+  const cfg=atlas===img.frontend?1:atlas===img.title?0:atlas===img.interior?5:atlas===img.dungeon?4:atlas===img.worldB?3:2;
+  gfx?.background(cfg,tile,x,y+top,h,top,pal,family);
   ctx.drawImage(atlas,tile*8,family*32+(pal&3)*8+top,w,h,x,y+top,w,h);
 }
 function titlePaletteAt(col,row){const ai=((row>>2)*8)+(col>>2),a=VDATA.titleAttrs[ai]||0,sh=((row&2)?4:0)+((col&2)?2:0);return(a>>sh)&3}
@@ -544,7 +576,7 @@ function changeRealm(toDungeon){
 function beginDeath(){gameMode=GAME_MODE.DEATH;modePhase=0;player.dead=true;player.hpUnderflow=false;deathState='sequence';deathTimer=0;deathY=PLAYER_SCREEN.y;gameOverTimer=0;attackTimer=0;attackHitActive=false;moving=false;resetSpell();worldDay=0;resetInput();closeInventoryPanel();closeServicePanel();audioPlay(SFX.DEATH);say('VALKYRIE DOWN',90)}
 function updateDeathSequence(){
   if(deathState==='gameover')return updateGameOver();
-  deathTimer++;if(deathTimer<76){if((deathTimer&7)===0)facing=(facing+1)&3;return}if(deathTimer<123)return;if(deathTimer<255)return;deathY--;if(deathY<0){deathState='gameover';gameMode=GAME_MODE.GAME_OVER;modePhase=0;gameOverTimer=0;clearActors();notice='';noticeTimer=0}}
+  deathTimer++;if(deathTimer<76){if((deathTimer&7)===0)facing=(facing+1)&3;return}if(deathTimer<123)return;if(deathTimer<255){reloadWorldPalette(2);return}deathY--;if(deathY<0){deathState='gameover';gameMode=GAME_MODE.GAME_OVER;modePhase=0;gameOverTimer=0;clearActors();notice='';noticeTimer=0}}
 function updateGameOver(){
   // Retail GAME_OVER phase 0 loads the CHR-backed PPU script, then phase 1 waits.
   if(modePhase===0){modePhase=1;gameOverTimer=0;pressed.clear();return}
@@ -570,7 +602,7 @@ function hurtBlinkPaletteActive(){
   // is active for 8..11, 16..19 and 24..27; all other ticks use the normal palette.
   return elapsed>=8&&(elapsed&4)===0;
 }
-function playerRenderPalette(){return hurtBlinkPaletteActive()?3:0}
+function playerRenderPalette(){return hurtBlinkPaletteActive()?3:player.terrainMode==='ship'?1:0}
 
 function rawHazardDamage(n){
   if(player.dead||n<=0)return 0;return subtractPlayerHpRetail(n);
@@ -587,7 +619,7 @@ function updatePlayerStatusEffects(){
 }
 function triggerMagicRainbow(){
   if(magicRainbowActive||worldClockSecond!==0)return false;const ship=findInventorySlot(0x1B);if(ship<0)return false;
-  clearInventorySlot(ship);clearActors();worldGraphicsGroup=1;actors[0]={kind:'rainbow',cls:2,x:0x0A60,y:0x01C0,pal:1,meta:0xD0,logicFrame:0};magicRainbowActive=true;attackTimer=0;attackHitActive=false;audioPlay(SFX.MAJOR);say('MAGIC RAINBOW · Magic Ship consumed',120);renderInventoryPanel();return true;
+  clearInventorySlot(ship);clearActors();worldGraphicsGroup=1;reloadWorldPalette();actors[0]={kind:'rainbow',cls:2,x:0x0A60,y:0x01C0,pal:1,meta:0xD0,logicFrame:0};magicRainbowActive=true;attackTimer=0;attackHitActive=false;audioPlay(SFX.MAJOR);say('MAGIC RAINBOW · Magic Ship consumed',120);renderInventoryPanel();return true;
 }
 function maybeBreakDefensiveEquipment(){
   if((rng8()&255)===0){if(player.equipment.helmet){player.equipment.helmet=false;audioPlay(SFX.BREAK);say('HELMET BROKE',80)}return 'helmet'}
@@ -728,18 +760,19 @@ function drawComplexMetaFrom(source,id,basePal,x,y,hflip=false){
 function drawComplexMeta(id,basePal,x,y,hflip=false){return drawComplexMetaFrom(img.spr,id,basePal,x,y,hflip)}
 function playerSpriteImage(){const bank=(player.equipment.helmet?1:0)|(player.equipment.mantle?2:0);return img['player'+bank]||img.spr}
 function playerMoveMeta(){
-  const phase=(frameCounter>>3)&1;
-  if(player.terrainMode==='swim')return{kind:'simple',id:0x08,flip:false};
+  const phase=(frameCounter>>(moving?3:4))&1;
+  if(player.terrainMode==='swim')return{kind:'simple',id:0x08,flip:!!phase};
   if(player.terrainMode==='ship')return{kind:'simple',id:0x26,flip:false};
-  if(player.terrainMode==='marco')return{kind:'complex',id:moving&&phase?0xCD:0xCC,flip:false};
-  if(player.terrainMode==='sink')return{kind:'simple',id:0x45,flip:false};
+  if(player.terrainMode==='marco')return{kind:'complex',id:moving&&phase?0xCD:0xCC,flip:facing===2};
+  if(player.terrainMode==='sink')return{kind:'simple',id:0x45,flip:!!phase};
   if(!moving)return{kind:'simple',id:[2,1,3,3][facing],flip:facing===2};
   const id=(phase?[13,12,3,3]:[2,1,4,4])[facing];return{kind:'simple',id,flip:facing===2};
 }
 function playerAttackMeta(){
   if(player.terrainMode==='ship')return{kind:'simple',id:0x26,flip:false};
-  if(player.terrainMode==='marco')return{kind:'complex',id:0xCC,flip:false};
+  if(player.terrainMode==='marco')return{kind:'complex',id:0xCC,flip:facing===2};
   const second=attackTimer<8,axe=player.equippedItem===0x09||player.equippedItem===0x0A;
+  if(!axe&&(player.equippedItem<0x0B||player.equippedItem>0x0F))return{kind:'simple',id:(second?[0x0D,0x0C,3,3]:[2,1,4,4])[facing],flip:facing===2};
   if(axe){if(facing===0)return{kind:'complex',id:second?0xC9:0xC8,flip:false};if(facing===1)return{kind:'complex',id:second?0xC7:0xC6,flip:false};return{kind:'complex',id:second?0xCB:0xCA,flip:facing===2}}
   if(facing===0)return{kind:'complex',id:second?0xC3:0xC2,flip:false};if(facing===1)return{kind:'complex',id:second?0xC1:0xC0,flip:false};return{kind:'complex',id:second?0xC5:0xC4,flip:facing===2};
 }
@@ -769,9 +802,9 @@ function initActorFromSpawnToken(token,x,y,persistence=0xFF){
   const rec=token&0x3F,cls=VDATA.combatClass[rec]||0;if(cls===0)return false;
   if(actorRequiresGroundCheck(cls)&&!terrainPassableForActor(x,y))return false;
   const hp=VDATA.combatHp[rec]||1;
-  if(cls===3){actors[slot]={kind:'marco',role:'reward',rewardTriggered:false,cls,rec,pal:3,x,y,dir:3,desired:3,timer:0,age:32,logicFrame:0,persistence,fixed:persistence!==0xFF};return true}
+  if(cls===3){actors[slot]={kind:'marco',role:'reward',rewardTriggered:false,cls,rec,pal:3,meta:0x24,x,y,dir:3,desired:3,timer:0,age:32,logicFrame:0,persistence,fixed:persistence!==0xFF};return true}
   const initialDir=cls===8?3:0;
-  actors[slot]={kind:'combat',cls,rec,pal:VDATA.combatPalette[rec]||0,x,y,dir:initialDir,desired:0,timer:0x20,age:0,logicFrame:0,hp,maxHp:hp,power:VDATA.combatPower[rec]||0,xp:VDATA.combatXp[rec]||0,hitTimer:0,deathTimer:0,aimedInterval:false,zounaTimer:0xFF,zounaVisible:true,flyChase:false,zuhlHasStolen:false,persistence,fixed:persistence!==0xFF};audioPlay(SFX.SPAWN);return true;
+  actors[slot]={kind:'combat',cls,rec,pal:VDATA.combatPalette[rec]||0,renderPal:3,meta:0x44,hflip:false,x,y,dir:initialDir,desired:0,timer:0x20,age:0,logicFrame:0,hp,maxHp:hp,power:VDATA.combatPower[rec]||0,xp:VDATA.combatXp[rec]||0,hitTimer:0,deathTimer:0,aimedInterval:false,zounaTimer:0xFF,zounaVisible:true,flyChase:false,zuhlHasStolen:false,persistence,fixed:persistence!==0xFF};audioPlay(SFX.SPAWN);return true;
 }
 function clearEncounterLocks(){encounterLocks.surface.fill(0);encounterLocks.dungeon.fill(0);say('ENCOUNTER LOCKS RESET',45)}
 function scanAndSpawnFixedObjects(){
@@ -792,7 +825,7 @@ function fixedPersistenceCleared(a){return a&&a.persistence!=null&&a.persistence
 function spawnWaterMarco(){
   if(actors.some(a=>a&&a.kind==='marco'&&a.role==='water'))return false;
   let slot=firstFreeActorSlot();if(slot<0)slot=0;const p=playerWorld();
-  actors[slot]={kind:'marco',role:'water',rewardTriggered:false,cls:3,rec:7,pal:3,x:p.x+MARCO_WATER_SPAWN_OFFSET[0],y:p.y,dir:3,desired:3,timer:0,age:32,logicFrame:0,persistence:0xFF,fixed:false};return true;
+  actors[slot]={kind:'marco',role:'water',rewardTriggered:false,cls:3,rec:7,pal:3,meta:0x24,x:p.x+MARCO_WATER_SPAWN_OFFSET[0],y:p.y,dir:3,desired:3,timer:0,age:32,logicFrame:0,persistence:0xFF,fixed:false};return true;
 }
 function spawnMarcoReward(){
   const slot=firstFreeActorSlot();if(slot<0)return false;const p=playerWorld(),o=MARCO_REWARD_OFFSETS[facing]||[0,16];
@@ -815,6 +848,12 @@ const enemyMetas={
   8:[0x18,0x19,0x18,0x19,0x18,0x19,0x18,0x19],9:[0x20,0x21,0x22,0x23,0x1E,0x1F,0x22,0x23],
   11:[0x12,0x13,0x12,0x13,0x12,0x13,0x12,0x13]
 };
+const enemyBaseMetas={4:0x0A,5:0x0E,6:0x1C,7:0x16,8:0x18,9:0x1E,10:0xCE,11:0x12,15:0xD1};
+function selectEnemyPresentation(a,phase){
+  const base=directionFrameBase[a.dir]||0,index=base|(phase&1);
+  a.meta=a.cls===15?((index&1)?0xD2:0xD1):enemyMetas[a.cls]?.[index]??enemyBaseMetas[a.cls]??0x44;
+  a.hflip=(index&6)===6;
+}
 const directionFrameBase=[0,0,2,2,2,4,6,6,6],actorDelta={1:[0,-1],2:[1,-1],3:[1,0],4:[1,1],5:[0,1],6:[-1,1],7:[-1,0],8:[-1,-1]};
 const projectileDelta={1:[0,-2],2:[2,-2],3:[2,0],4:[2,2],5:[0,2],6:[-2,2],7:[-2,0],8:[-2,-2]};
 const KOAKUMAN_STRAFE=[7,7,1,1,3,3,5,5,7];
@@ -838,7 +877,7 @@ function swordRectOverlapsPoint(x,y){
 function swordBoxOverlapsPoint(x,y){
   if(!swordRectOverlapsPoint(x,y))return false;const actorToPlayer=actorDirectionToPlayer({x,y});return SWORD_ARCS[facing].includes(actorToPlayer);
 }
-function swordOverlaps(a){return a.kind==='combat'&&a.hitTimer<=0&&a.hp>0&&a.age>=32&&swordBoxOverlapsPoint(a.x,a.y)}
+function swordOverlaps(a){return a.kind==='combat'&&a.hitTimer<=0&&a.age>=32&&swordBoxOverlapsPoint(a.x,a.y)}
 function applySwordHit(a){
   const dmg=weaponDamage();if(dmg<=0)return;attackHitActive=false;a.hp=Math.max(0,a.hp-dmg);a.timer=a.hitTimer=40;a.knockDir=facing;a.dir=facing;a.desired=0;audioPlay(SFX.ENEMY_HIT);say(`${VDATA.combatLabel[a.rec]}  -${dmg} HP  ${a.hp}/${a.maxHp}`,45);
 }
@@ -850,7 +889,7 @@ function finalizeDefeat(a){
   // Retail commits fixed-object defeat metadata before consuming either drop RNG byte.
   if(fixedPersistence!=null&&fixedPersistence!==0xFF){if(defeatedClass===10)fixedState[fixedPersistence]=0;else fixedState[fixedPersistence]|=0x80}
   const rare=(rng8()&0xF8)===0,itemId=(rare?DROP_RARE:DROP_COMMON)[defeatedClass]||0;
-  a.kind='item';a.cls=1;a.itemId=itemId;a.style=0;a.hidden=false;a.persistence=0xFF;a.fixed=false;a.pal=ITEM_SPRITE_ATTR[itemId]&3;a.meta=ITEM_WORLD_META[itemId]||0x44;a.hitTimer=0;a.deathTimer=0;a.age=32;
+  a.kind='item';a.cls=1;a.itemId=itemId;a.style=0;a.hidden=false;a.persistence=0xFF;a.fixed=false;a.pal=ITEM_SPRITE_ATTR[itemId]&3;a.renderPal=a.pal;a.hflip=false;a.meta=ITEM_WORLD_META[itemId]||0x44;a.hitTimer=0;a.deathTimer=0;a.age=32;
   // Retail advances RNG again for the unpacked 1/2/5/10 Gold Bag reward even when the drop is not Gold.
   const roll=(rng8()>>3)&6,gold=[1,2,5,10][roll>>1];a.goldAmount=itemId===0x1C?gold:0;
   // Zuhl's class handler receives COMBAT_RESULT_DROP_SPAWNED only after the in-place item conversion.
@@ -876,18 +915,19 @@ function tryPickupItem(a,i){
 }
 function damageFromActorIfOverlap(a){if(!player.dead&&bodyOverlap(a,12))damageFromActorPower(a.power,VDATA.combatLabel[a.rec])}
 function contactDamageTick(a){
+  if((a.logicFrame&(a.cls===7?0x1F:0x0F))===0)selectEnemyPresentation(a,(a.logicFrame>>(a.cls===7?5:4))&1);
   if(player.dead||!bodyOverlap(a,12))return;
   let fire=false;if([4,5].includes(a.cls))fire=(a.logicFrame&0x1F)===0x10;else if(a.cls===7)fire=(a.logicFrame&0x3F)===0x20;else if(a.cls===11)fire=(a.logicFrame&0x1F)===0x10;
   if(fire)damageFromActorPower(a.power,VDATA.combatLabel[a.rec]);
 }
 function spawnEnemyProjectile(parent,zouna=false){
   const slot=firstFreeActorSlot();if(slot<0)return false;const d=parent.desired;
-  actors[slot]={kind:'projectile',projectileType:zouna?'zouna':'normal',cls:zouna?13:12,rec:parent.rec,pal:1,x:parent.x+4,y:parent.y,dir:d,desired:d,age:0,logicFrame:0,power:parent.power,impactTimer:0,meta:zouna?0x41:0x31};
+  actors[slot]={kind:'projectile',projectileType:zouna?'zouna':'normal',cls:zouna?13:12,rec:parent.rec,pal:1,x:parent.x+4,y:parent.y,renderX:parent.renderX??parent.x-camera.x,renderY:parent.renderY??parent.y-camera.y,dir:d,desired:d,age:0,logicFrame:0,power:parent.power,impactTimer:0,meta:0x31};
   audioPlay(SFX.SHOT);return true;
 }
 function enterProjectileImpact(a){attackHitActive=false;a.impactTimer=8;a.logicFrame=0;a.meta=0x1B}
 function updateProjectile(a,i){
-  const sx=a.x-camera.x,sy=a.y-camera.y;if(sx<0||sx>=248||sy<0||sy>=192){actors[i]=null;return}
+  const sx=a.x-camera.x,sy=a.y-camera.y;if(sx<0||sx>=248||sy<0||sy>=192){actors[i]=null;return}a.renderX=sx;a.renderY=sy;
   a.age++;a.logicFrame++;
   if(a.impactTimer>0){if(--a.impactTimer===0)actors[i]=null;return}
   if(bodyOverlap(a,12)){
@@ -898,11 +938,12 @@ function updateProjectile(a,i){
   // Unlike combat actors it does not apply SwordHitFacingArcTable, so a projectile can be cut
   // anywhere strictly inside that rectangle while ATTACK_ACTIVE is latched.
   if(swordRectOverlapsPoint(a.x,a.y)){enterProjectileImpact(a);return}
+  if(a.dir===0&&a.desired===0)a.dir=3;
   const d=projectileDelta[a.dir]||[0,0];a.x+=d[0];a.y+=d[1];
-  if(a.projectileType==='zouna')a.meta=((a.logicFrame>>2)&1)?0x42:0x41;else a.meta=0x31;
+  if((a.logicFrame&3)===0)a.meta=a.projectileType==='zouna'?(((a.logicFrame>>2)&1)?0x42:0x41):0x31;
 }
 function serviceKoakumanAttacks(a){
-  if((a.logicFrame&0x0F)!==0)return;const phase=(a.logicFrame>>4)&1;let projectileCheck=phase===0;
+  if((a.logicFrame&0x0F)!==0)return;const phase=(a.logicFrame>>4)&1;selectEnemyPresentation(a,phase);let projectileCheck=phase===0;
   if(phase){if((rng8()&0x80)===0){damageFromActorIfOverlap(a);projectileCheck=true}else if(!invisibilityActive()&&bodyOverlap(a,12)&&(rng8()&0x70)===0){setPoison(true);say('KOAKUMAN POISON',70)}}
   if(projectileCheck&&a.hp>=0x19&&(rng8()&0x18)===0)spawnEnemyProjectile(a,false);
 }
@@ -914,7 +955,7 @@ function updateKoakumanAI(a,interaction=false){
   serviceKoakumanAttacks(a);
 }
 function serviceSochikisuAttacks(a){
-  if((a.logicFrame&0x0F)!==0)return;audioPlay(SFX.ZOUNA);const phase=(a.logicFrame>>4)&1;if(phase)damageFromActorIfOverlap(a);if(a.hp>=0x41&&(rng8()&0x18)===0)spawnEnemyProjectile(a,false);
+  if((a.logicFrame&0x0F)!==0)return;audioPlay(SFX.ZOUNA);const phase=(a.logicFrame>>4)&1;selectEnemyPresentation(a,phase);if(phase)damageFromActorIfOverlap(a);if(a.hp>=0x41&&(rng8()&0x18)===0)spawnEnemyProjectile(a,false);
 }
 function updateSochikisuAI(a,interaction=false){
   if(!interaction){
@@ -925,23 +966,24 @@ function updateSochikisuAI(a,interaction=false){
   serviceSochikisuAttacks(a);
 }
 function updateRobotianAI(a,interaction=false){
-  if(interaction)return;
+  if(interaction){if((a.logicFrame&15)===0)selectEnemyPresentation(a,(a.logicFrame>>4)&1);return}
   if(--a.timer<=0){
     a.timer=0x16+(rng8()&0x3F);
     if(!a.aimedInterval){a.aimedInterval=true;a.dir=a.desired;spawnEnemyProjectile(a,false)}
     else{a.aimedInterval=false;const r=rng8();a.dir=((r>>1)&0x06)+1}
   }
   if((a.logicFrame&1)===0)moveCombatActor(a,a.dir,false);
+  if((a.logicFrame&15)===0)selectEnemyPresentation(a,(a.logicFrame>>4)&1);
 }
 function updateZounaAI(a){
   a.zounaTimer=(a.zounaTimer-1)&255;if(a.zounaTimer===0){a.zounaTimer=0xFF;const zd=a.desired;const d=actorDelta[zd]||[0,0];a.x+=d[0]*24;a.y+=d[1]*24;audioPlay(SFX.ZOUNA)}
-  const t=a.zounaTimer;a.zounaVisible=!(t<0x07||((t<0x27||t>=0xDF)&&(t&1)));if(!a.zounaVisible)return;
+  const t=a.zounaTimer;a.zounaVisible=!(t<0x07||((t<0x27||t>=0xDF)&&(t&1)));a.meta=a.zounaVisible?((a.logicFrame&0x20)?0xCF:0xCE):0x44;if(!a.zounaVisible)return;
   if(a.logicFrame&0x20){if((a.logicFrame&0x1F)===0)spawnEnemyProjectile(a,true)}else if((a.logicFrame&0x1F)===0)damageFromActorIfOverlap(a);
 }
 function serviceShizasuLockedContact(a){if((a.logicFrame&0x0F)!==0)return;if((rng8()&0xC0)===0)damageFromActorIfOverlap(a)}
 function updateShizasuAI(a,interaction=false){
   if(!interaction)a.dir=a.desired;
-  if((a.logicFrame&0x0F)!==0)return;const phase=(a.logicFrame>>4)&1;if(phase&&(rng8()&0x18)!==0)spawnEnemyProjectile(a,false);if((rng8()&0xC0)===0)damageFromActorIfOverlap(a);
+  if((a.logicFrame&0x0F)!==0)return;const phase=(a.logicFrame>>4)&1;selectEnemyPresentation(a,phase);if(phase&&(rng8()&0x18)!==0)spawnEnemyProjectile(a,false);if((rng8()&0xC0)===0)damageFromActorIfOverlap(a);
 }
 function updateTattaAI(a,interaction=false){
   if(!interaction){if(--a.timer<=0){a.timer=0x20+(rng8()&0x3F);a.dir=invisibilityActive()?((rng8()%8)+1):a.desired;if(!invisibilityActive()){if(a.hp<0x18)return;spawnEnemyProjectile(a,false)}}if((a.logicFrame&3)!==0)moveCombatActor(a,a.dir,false)}
@@ -950,7 +992,7 @@ function updateTattaAI(a,interaction=false){
 function updateBlackSandraAI(a,interaction=false){
   if(interaction){a.blackSandraIdle=false;contactDamageTick(a);return}
   const near=actorProximityOverlap(a,0x3A);
-  if(--a.timer<=0){a.timer=1;if(!near){a.blackSandraIdle=true;return}a.blackSandraIdle=false;a.timer=0x16+(rng8()&0x3F);a.dir=invisibilityActive()?((rng8()%8)+1):a.desired}
+  if(--a.timer<=0){a.timer=1;if(!near){a.blackSandraIdle=true;if((a.logicFrame&15)===0)a.meta=[0x0E,0x0F,0x10,0x11][(a.logicFrame>>4)&3];return}a.blackSandraIdle=false;a.timer=0x16+(rng8()&0x3F);a.dir=invisibilityActive()?((rng8()%8)+1):a.desired}
   if((a.logicFrame&3)!==0)moveCombatActor(a,a.dir,false);contactDamageTick(a);
 }
 function updateFlyDrillAI(a,interaction=false){
@@ -966,7 +1008,7 @@ function zhulStealFirstItem(a){
   if(a.zuhlHasStolen)return 0;a.zuhlHasStolen=true;const pi=zuhlStolenPool.findIndex(v=>v===0);if(pi<0)return 0;const ii=player.inventory.findIndex(x=>x.id);if(ii<0)return 0;const id=player.inventory[ii].id;zuhlStolenPool[pi]=id;player.inventory[ii].id=0;audioPlay(SFX.ZUHL);say(`ZUHL STOLE ${ITEM_NAMES[id]} · fleeing`,90);renderInventoryPanel();return id;
 }
 function updateZuhlAI(a){
-  if(bodyOverlap(a,12))zhulStealFirstItem(a);a.dir=invisibilityActive()?((rng8()%8)+1):(a.zuhlHasStolen?reverseActorDirection(a.desired):a.desired);moveCombatActor(a,a.dir,true);if((a.logicFrame&0x0F)===0)audioPlay(SFX.ZUHL);
+  if(bodyOverlap(a,12))zhulStealFirstItem(a);a.dir=invisibilityActive()?((rng8()%8)+1):(a.zuhlHasStolen?reverseActorDirection(a.desired):a.desired);moveCombatActor(a,a.dir,true);a.hflip=a.dir>=5;if((a.logicFrame&0x0F)===0){a.meta=(a.logicFrame&16)?0x13:0x12;audioPlay(SFX.ZUHL)}
 }
 function updateGenericCombatAI(a,interaction=false){
   if(interaction){contactDamageTick(a);return}contactDamageTick(a);if(--a.timer<=0)chooseActorDirection(a);if((frameCounter%3)!==0)return;moveCombatActor(a,a.dir,false);
@@ -974,7 +1016,7 @@ function updateGenericCombatAI(a,interaction=false){
 function updateMarcoActor(a,i){
   a.logicFrame++;
   if(a.role==='water'){
-    const touching=bodyOverlap(a,12);a.x+=1;
+    const touching=bodyOverlap(a,12);a.x+=1;if((a.logicFrame&7)===0)a.meta=(a.logicFrame&8)?0x25:0x24;
     if(touching){
       if(collisionSample(facing).tile===0xE9){player.terrainMode='marco';say('MARCO TRANSPORT · OPEN WATER PASS',80)}
       else say('MARCO ARRIVED · facing tile is no longer open water',60);
@@ -987,10 +1029,10 @@ function updateMarcoActor(a,i){
     const reward=spawnMarcoReward();a.rewardTriggered=true;
     say(reward?'MARCO EVENT · FULL HEAL + MARCO REWARD':'MARCO EVENT · FULL HEAL · reward lost (actor pool full)',100);
   }
-  if(a.rewardTriggered)a.x-=1;
+  if(a.rewardTriggered){a.x-=1;if((a.logicFrame&7)===0)a.meta=(a.logicFrame&8)?0x25:0x24;}
 }
 function tryFireballHit(a){
-  if(!spellIs(2)||a.kind!=='combat'||a.hp<=0||a.hitTimer>0)return false;const sx=a.x-camera.x,sy=a.y-camera.y;if(Math.abs(sx-spell.x)>=12||Math.abs(sy-spell.y)>=12)return false;
+  if(!spellIs(2)||a.kind!=='combat'||a.hitTimer>0)return false;const sx=a.x-camera.x,sy=a.y-camera.y;if(Math.abs(sx-spell.x)>=12||Math.abs(sy-spell.y)>=12)return false;
   // $F7A3 requests the normal hit sound; $F7A6 uses the player's current facing,
   // even when the player has turned since launching the fireball.
   const dmg=fireballDamageFor(a),before=a.hp;a.hp=Math.max(0,before-dmg);a.timer=a.hitTimer=40;a.knockDir=facing;a.dir=facing;a.desired=0;resetSpell();audioPlay(SFX.ENEMY_HIT);say(`FIREBALL → ${VDATA.combatLabel[a.rec]} -${dmg} HP`,70);
@@ -1003,30 +1045,39 @@ function updatePyramidOpening(a,i){
 function updateActor(a,i){
   if(a.kind==='rainbow'){a.logicFrame++;if(worldClockSecond===0x04){actors[i]=null;magicRainbowActive=false}return}
   if(a.kind==='projectile'){updateProjectile(a,i);return}
-  const sx=a.x-camera.x,sy=a.y-camera.y;if(sx<0||sx>=248||sy<0||sy>=192){actors[i]=null;return}
+  const sx=a.x-camera.x,sy=a.y-camera.y;if(sx<0||sx>=248||sy<0||sy>=192){actors[i]=null;return}a.renderX=sx;a.renderY=sy;
   if(a.kind==='pyramid'){updatePyramidOpening(a,i);return}
   if(a.kind==='item'){tryPickupItem(a,i);return}
   if(a.kind==='marco'){updateMarcoActor(a,i);return}
+  // $E29C caches screen coordinates before AI movement; $0507/$0508 retain
+  // the last metasprite and attributes until the class animation cadence writes them.
+  a.meta??=enemyBaseMetas[a.cls]??0x44;a.renderPal??=a.pal??0;a.hflip??=false;
   a.age++;a.logicFrame++;updateDesiredDirection(a);
-  if(a.deathTimer>0){if(--a.deathTimer===0)finalizeDefeat(a);return}
-  if(a.age<32){a.timer=Math.max(1,0x20-a.age);return}
+  if(a.deathTimer>0){a.meta=0x1B;if(--a.deathTimer===0)finalizeDefeat(a);return}
+  if(a.age<32){a.timer=Math.max(1,0x20-a.age);a.meta=spawnFlashMeta(a.age);a.renderPal=3;return}
+  if(a.age===32){a.meta=enemyBaseMetas[a.cls]??0x44;a.renderPal=a.pal;a.timer=1;if(a.cls===10)a.zounaTimer=0x01}
+  let finishedHit=false,finalHitBody=false;
   if(a.hitTimer>0){
+    a.renderPal=a.hitTimer===1?a.pal:(a.renderPal===3?1:3);
     if(a.hitTimer>32&&a.cls!==15){const d=KNOCKBACK[a.knockDir]||[0,0];a.x+=d[0];a.y+=d[1]}
     // Retail clears hit reaction first, then only starts the $1B death animation
     // on the following actor update. Keep overlap/body blocking on this finish tick.
-    registerActorBodyOverlap(a);a.hitTimer--;a.timer=Math.max(1,a.hitTimer);if(a.cls===15)serviceShizasuLockedContact(a);
-    return;
+    finalHitBody=registerActorBodyOverlap(a);a.hitTimer--;a.timer=Math.max(1,a.hitTimer);
+    if(a.hitTimer>0){if(a.cls===15)serviceShizasuLockedContact(a);return}
+    // $F5FC clears the reaction before collision/spell dispatch. On this finish
+    // frame zero HP remains body-solid; outside interaction the kernel returns
+    // NORMAL and permits AI, with the death check deferred until the next tick.
+    finishedHit=true;
   }
-  if(a.hp===0){a.deathTimer=8;return}
-  if(a.age===32){a.timer=1;if(a.cls===10)a.zounaTimer=0x01}
+  if(a.hp===0&&!finishedHit){a.meta=0x1B;a.logicFrame=0;a.deathTimer=8;return}
   // $F66A-$F691 gives body/sword-box interaction priority over spell collision.
   // Sword facing controls damage inside that branch, but its rectangle alone
   // selects INTERACTION. A successful nonlethal hit still services the class AI
   // this frame; the newly set reaction locks it starting with the next update.
-  const interaction=registerActorBodyOverlap(a)||swordRectOverlapsPoint(a.x,a.y);
+  const interaction=(finishedHit?finalHitBody:registerActorBodyOverlap(a))||swordRectOverlapsPoint(a.x,a.y);
   let fireballResult=0;
   if(interaction){if(swordOverlaps(a))applySwordHit(a)}else fireballResult=tryFireballHit(a);
-  if((a.hp===0&&!fireballResult)||fireballResult===2||starFluteActive()){if(a.cls===15)serviceShizasuLockedContact(a);return}
+  if((a.hp===0&&!fireballResult&&(interaction||!finishedHit))||fireballResult===2||starFluteActive()){if(a.cls===15)serviceShizasuLockedContact(a);return}
   if(a.cls===4)updateTattaAI(a,interaction);else if(a.cls===5)updateBlackSandraAI(a,interaction);else if(a.cls===6)updateKoakumanAI(a,interaction);else if(a.cls===7)updateFlyDrillAI(a,interaction);else if(a.cls===8)updateSochikisuAI(a,interaction);else if(a.cls===9)updateRobotianAI(a,interaction);else if(a.cls===10)updateZounaAI(a);else if(a.cls===11)updateZuhlAI(a);else if(a.cls===15)updateShizasuAI(a,interaction);else updateGenericCombatAI(a,interaction);
   // Retail uses ActorTimer for both movement and reaction. Fireball returns NORMAL,
   // so a class may already decrement that same timer on the damage frame.
@@ -1049,36 +1100,29 @@ function drawSimpleMetaLimited(id,pal,x,y,hflip,limit){
 }
 function drawComplexMetaLimited(id,basePal,x,y,hflip,limit){const m=COMPLEX_META[id|0x40];if(!m||limit<=0)return 0;let used=0;for(const [tile,attr,dx,dy] of m.c){if(used>=limit)break;const merged=(basePal&0x23)|(hflip?0x40:0)|attr;draw8x16From(img.spr,tile,merged,x+(hflip?8-dx:dx),y+dy,!!(merged&0x40),!!(merged&0x80));used++}return used}
 function actorMetaSpec(a){
-  if(a.kind==='combat'&&endingActive&&ending.phase===1&&ending.timer>=300){const id=(Math.min(ending.timer,599)-299)&4?0x44:({4:0x0A,5:0x0E,6:0x1C,7:0x16,8:0x18,9:0x1E,10:0xCE,11:0x12,15:0xD1}[a.cls]||a.meta||0x44);return{id,pal:a.pal||0,x:a.x-camera.x,y:a.y-camera.y,flip:false}}
-  if(a.kind==='item')return{id:a.meta,pal:a.pal,x:a.x-camera.x+4,y:a.y-camera.y+4,flip:false};
-  const x=a.x-camera.x,y=a.y-camera.y;if(a.kind==='pyramid')return{id:a.meta,pal:2,x,y,flip:false};if(a.kind==='rainbow')return{id:0xD0,pal:1,x,y,flip:false};
-  if(a.kind==='marco')return{id:((a.logicFrame>>3)&1)?0x25:0x24,pal:3,x,y,flip:a.role==='reward'&&a.rewardTriggered};
-  if(a.kind==='projectile')return{id:a.impactTimer>0?0x1B:a.meta,pal:a.impactTimer>0?3:1,x,y,flip:false};
-  if(a.deathTimer>0)return{id:0x1B,pal:3,x,y,flip:false};if(a.age<32)return{id:spawnFlashMeta(a.age),pal:3,x,y,flip:false};
-  const flashPal=a.hitTimer>1?((a.hitTimer&1)?3:1):a.pal;
+  const x=a.renderX??a.x-camera.x,y=a.renderY??a.y-camera.y,flip=!!a.hflip,pal=a.renderPal??a.pal??0;
+  if(a.kind==='combat'&&endingActive&&ending.phase===1&&ending.timer>=300){const id=(Math.min(ending.timer,599)-299)&4?0x44:(enemyBaseMetas[a.cls]??a.meta??0x44);return{id,pal,x,y,flip}}
+  if(a.kind==='item')return{id:a.meta??ITEM_WORLD_META[a.itemId]??0x44,pal:a.pal??0,x,y,flip:false};
+  if(a.kind==='pyramid')return{id:a.meta??0x0E,pal:2,x,y,flip:!!a.hflip};if(a.kind==='rainbow')return{id:0xD0,pal:1,x,y,flip:false};
+  if(a.kind==='marco')return{id:a.meta??(a.role==='reward'&&!a.rewardTriggered?0x24:((a.logicFrame>>3)&1)?0x25:0x24),pal:3,x,y,flip:a.role==='reward'&&a.rewardTriggered};
+  if(a.kind==='projectile')return{id:a.impactTimer>0?0x1B:a.meta??0x31,pal:1,x,y,flip:false};
+  if(a.deathTimer>0)return{id:0x1B,pal,x,y,flip};if(a.age<32)return{id:a.meta??spawnFlashMeta(a.age),pal:3,x,y,flip:false};
+  if(a.meta!=null)return{id:a.meta,pal,x,y,flip};
+  // Older injected actor records have no stored presentation fields. Keep a pure
+  // fallback; real actor initialization and updates write the retained state.
+  const flashPal=a.renderPal??(a.hitTimer>1?((a.hitTimer&1)?3:1):a.pal);
   if(a.cls===10){if(!a.zounaVisible)return null;return{id:(a.logicFrame&0x20)?0xCF:0xCE,pal:flashPal,x,y,flip:false}}
   if(a.cls===15)return{id:((a.logicFrame>>4)&1)?0xD2:0xD1,pal:flashPal,x,y,flip:false};
   if(a.cls===5&&a.blackSandraIdle)return{id:[0x0E,0x0F,0x10,0x11][(a.logicFrame>>4)&3],pal:flashPal,x,y,flip:false};
-  const table=enemyMetas[a.cls];if(table){const phase=(a.logicFrame>>(a.cls===7?5:4))&1,base=directionFrameBase[a.dir]||0,index=base+phase;return{id:table[index],pal:flashPal,x,y,flip:(index&6)===6}}
+  const table=enemyMetas[a.cls];if(table){const phase=(a.logicFrame>>(a.cls===7?5:4))&1,base=directionFrameBase[a.dir]||0,index=base+phase;return{id:table[index],pal:flashPal,x,y,flip:a.cls===11?a.dir>=5:(index&6)===6}}
   return null;
 }
 function playerOamComponentCount(){if(player.dead){if(deathState!=='sequence')return 0;return simpleMetaComponentCount(deathTimer<76?[1,3,2,3][facing]:(deathTimer<123?0x06:0x07))}if(invisibilityActive()&&(frameCounter&1))return 0;const m=attackTimer>0?playerAttackMeta():playerMoveMeta();return m.kind==='complex'?(COMPLEX_META[m.id]?.c.length||0):simpleMetaComponentCount(m.id)}
-function spellOamComponentCount(){if(spell.type===2)return 1;if([1,6].includes(spell.type)&&((spell.timer>>2)&1)===0)return 1;return 0}
+function spellOamComponentCount(){return spell.type===2?1:0}
 function drawActorOamLimited(a,remaining){const s=actorMetaSpec(a);if(!s)return 0;const need=metaComponentCount(s.id);if(need<=0)return 0;if(remaining<=0){oamDynamicClipped+=need;return 0}const used=(s.id&0x80)?drawComplexMetaLimited(s.id,s.pal,s.x,s.y,s.flip,remaining):drawSimpleMetaLimited(s.id,s.pal,s.x,s.y,s.flip,remaining);if(used<need)oamDynamicClipped+=need-used;return used}
 function drawActor(a){
-  const x=a.x-camera.x,y=a.y-camera.y;if(a.kind==='item'){drawSimpleMeta(a.meta,a.pal,x+4,y+4,false);return}
-  if(a.kind==='pyramid'){drawSimpleMeta(a.meta,2,x,y,false);return}
-  if(a.kind==='rainbow'){drawComplexMeta(0xD0,1,x,y,false);return}
-  if(a.kind==='marco'){drawSimpleMeta(((a.logicFrame>>3)&1)?0x25:0x24,3,x,y,a.role==='reward'&&a.rewardTriggered);return}
-  if(a.kind==='projectile'){drawSimpleMeta(a.impactTimer>0?0x1B:a.meta,a.impactTimer>0?3:1,x,y,false);return}
-  if(a.deathTimer>0){drawSimpleMeta(0x1B,3,x,y,false);return}
-  if(a.age<32){drawSimpleMeta(spawnFlashMeta(a.age),3,x,y,false);return}
-  const flashPal=a.hitTimer>1?((a.hitTimer&1)?3:1):a.pal;
-  if(a.cls===10){if(!a.zounaVisible)return;drawComplexMeta((a.logicFrame&0x20)?0xCF:0xCE,flashPal,x,y,false);return}
-  if(a.cls===15){drawComplexMeta(((a.logicFrame>>4)&1)?0xD2:0xD1,flashPal,x,y,false);return}
-  if(a.cls===5&&a.blackSandraIdle){drawSimpleMeta([0x0E,0x0F,0x10,0x11][(a.logicFrame>>4)&3],flashPal,x,y,false);return}
-  const table=enemyMetas[a.cls];if(table){const phase=(a.logicFrame>>(a.cls===7?5:4))&1,base=directionFrameBase[a.dir]||0,index=base+phase;drawSimpleMeta(table[index],flashPal,x,y,(index&6)===6);return}
-  ctx.fillStyle='#fff';ctx.fillRect(Math.round(x)+3,Math.round(y)+3,10,10);ctx.fillStyle='#000';ctx.font='8px monospace';ctx.fillText('?',Math.round(x)+6,Math.round(y)+12);
+  const s=actorMetaSpec(a);if(!s)return;
+  if(s.id&0x80)drawComplexMeta(s.id,s.pal,s.x,s.y,s.flip);else drawSimpleMeta(s.id,s.pal,s.x,s.y,s.flip);
 }
 function spawnShooterTest(){
   if(mode!=='game'||player.dead)return;const rec=SHOOTER_TEST_RECORDS[shooterTestIndex++%SHOOTER_TEST_RECORDS.length],p=playerWorld();
@@ -1126,11 +1170,44 @@ function drawEndingScreen(){
   drawEndingTextScene(Math.min(9,ending.loadedScene));return true;
 }
 
-function resetInteriorState(){Object.assign(interior,{type:null,x:0xD0,y:0xA0,progress:0,settle:0,shopProfile:0,sellCursor:0,restActive:false,restTick:0,restSpent:0,restLevels:0,levelUpDelay:0})}
+function hotelPasswordTraits(){
+  let passwordFlags=0;PASSWORD_PERSIST_IDS.forEach((id,i)=>{if(hasInventoryItem(id))passwordFlags|=1<<i});
+  return{maxHp:player.maxHp,maxMp:player.maxMp,sign:player.sign,blood:player.blood,color:player.color,level:player.level,expThresholdIndex:player.expThresholdIndex,passwordSalt:player.passwordSalt,passwordFlags};
+}
+function createHotelDisplay(seed=false){
+  const packed={gold:player.gold,xp:player.xp,...hotelPasswordTraits()};
+  return{v:1,threshold:seed?{index:player.expThresholdIndex,level:player.level}:null,hp:seed?{value:player.hp,max:player.maxHp}:null,mp:seed?{value:player.mp,max:player.maxMp}:null,highestSpell:seed?highestUnlockedSpell():null,password:seed?encodeRetailPassword(packed):null,packed,pending:null};
+}
+function commitHotelDisplay(){
+  const d=interior.hotelDisplay||(interior.hotelDisplay=createHotelDisplay()),q=d.pending;
+  if(!q)return;d.pending=null;
+  if(q.type==='threshold')d.threshold={index:q.index,level:q.level};
+  else if(q.type==='hp'||q.type==='mp')d[q.type]={value:q.value,max:q.max};
+  else if(q.type==='spell')d.highestSpell=q.highest;
+  else if(q.type==='password')d.password=q.value;
+}
+function serviceHotelDisplayPhase(){
+  // $CA18/$CD39 dispatches one handler from FrameCounter's low four bits.
+  // $FC29 commits the shared VRAM record at the next NMI. Preserve the last
+  // uploaded values rather than rebuilding the text from live player stats.
+  const d=interior.hotelDisplay||(interior.hotelDisplay=createHotelDisplay());
+  switch(frameCounter&15){
+    case 1:d.pending={type:'spell',highest:highestUnlockedSpell()};break;
+    case 3:if(!d.pending)d.pending={type:'threshold',index:player.expThresholdIndex,level:player.level};break;
+    case 5:d.packed.gold=player.gold;break;
+    case 7:if(!d.pending)d.pending={type:'hp',value:player.hp,max:player.maxHp};break;
+    case 9:d.packed.xp=player.xp;break;
+    case 11:if(!d.pending)d.pending={type:'mp',value:player.mp,max:player.maxMp};break;
+    case 13:Object.assign(d.packed,hotelPasswordTraits());break;
+    // $CB80 keeps the previous password text on the nametable throughout rest.
+    case 15:if(!d.pending&&!interior.restActive)d.pending={type:'password',value:encodeRetailPassword(d.packed)};break;
+  }
+}
+function resetInteriorState(){Object.assign(interior,{type:null,x:0xD0,y:0xA0,progress:0,settle:0,shopProfile:0,sellCursor:0,restActive:false,restTick:0,restSpent:0,restLevels:0,levelUpDelay:0,hotelDisplay:null})}
 function beginInterior(type,fromGameplay=false){
   if(mode!=='game'||player.dead||endingActive||(gameMode!==GAME_MODE.GAMEPLAY&&!(fromGameplay&&gameMode===GAME_MODE.ITEM_SPELL_MENU)))return false;
   closeGameMenu();closeInventoryPanel();closeServicePanel();closeStatusPanel();
-  resetInteriorState();interior.type=type==='hotel'?'hotel':'shop';interior.shopProfile=shopProfileForWorld();activeShopProfile=interior.shopProfile;
+  resetInteriorState();interior.type=type==='hotel'?'hotel':'shop';interior.shopProfile=shopProfileForWorld();activeShopProfile=interior.shopProfile;if(interior.type==='hotel')interior.hotelDisplay=createHotelDisplay();
   // Retail clears the render queue on entry, preserving paused world actor slots.
   interior.x=0xD0;interior.y=0xA0;gameMode=GAME_MODE.ENTER_INTERIOR;modePhase=0;resetSpell();attackTimer=0;attackHitActive=false;moving=false;resetInput();
   say(`ENTER ${interior.type.toUpperCase()} · 256px STREAM`,75);return true;
@@ -1151,7 +1228,7 @@ function updateLeaveInteriorTransition(){
     terrainPatches.clear();terrainPatchOrigins.clear();interior.progress=0;interior.settle=0;modePhase=1;return;
   }
   if(modePhase===1){interior.progress=Math.min(256,interior.progress+8);if(interior.progress>=256){modePhase=2;interior.settle=0}return}
-  if(++interior.settle>=4){gameMode=GAME_MODE.GAMEPLAY;modePhase=0;interior.progress=0;interior.settle=0;player.terrainMode='land';facing=1;moving=false;say('BACK TO WORLD · HUD STABLE',55)}
+  if(++interior.settle>=4){reloadWorldPalette();gameMode=GAME_MODE.GAMEPLAY;modePhase=0;interior.progress=0;interior.settle=0;player.terrainMode='land';facing=1;moving=false;say('BACK TO WORLD · HUD STABLE',55)}
 }
 function interiorRequestedDir(){return requestedDir()}
 function interiorDirDelta(d){return d===0?[0,-1]:d===1?[0,1]:d===2?[-1,0]:[1,0]}
@@ -1209,13 +1286,13 @@ function serviceHotelRestTick(){
 }
 function updateInterior(){
   updateWorldClock();if(noticeTimer>0)noticeTimer--;if(player.hurtBlink>0)player.hurtBlink--;
-  if(interior.type==='hotel')refreshHotelCheckpoint((frameCounter&0x0F)===0);
-  if(interior.type==='hotel'&&interior.restActive){serviceHotelRestTick();return}
+  if(interior.type==='hotel'){commitHotelDisplay();refreshHotelCheckpoint((frameCounter&0x0F)===0)}
+  if(interior.type==='hotel'&&interior.restActive){serviceHotelRestTick();serviceHotelDisplayPhase();return}
   moveInteriorPlayer();if(gameMode!==GAME_MODE.INTERIOR)return;
   if(interior.type==='shop'){
     const shelf=shopShelfSelection();if(shelf&&attackPressed())buyShopItem(shelf.id);
     if(interior.x<0x38&&actionPressed())beginShopTransaction();
-  }else if(hotelBedZone())beginHotelRest();
+  }else{if((frameCounter&1)===0&&hotelBedZone()){beginHotelRest();serviceHotelRestTick()}serviceHotelDisplayPhase()}
 }
 function drawWorldBackground(offsetX=0){
   const ox=offsetX-(camera.x&7),oy=-(camera.y&7),sx=camera.x&~7,sy=camera.y&~7,bg=worldBackgroundAtlas();
@@ -1224,9 +1301,15 @@ function drawWorldBackground(offsetX=0){
   if(gfx)gfx.clipBottom=oldClip;
 }
 function drawInteriorMap(offsetX=0){
-  const baseY=interior.type==='hotel'?0x0AC0:0x0A00,baseX=-8;
+  const baseY=interior.type==='hotel'?0x0AC0:0x0A00,baseX=0;
   for(let r=0;r<24;r++)for(let c=0;c<33;c++){const z=resolveWorld(baseX+c*8,baseY+r*8);drawBgTile(img.interior,z.tile,z.pal,offsetX+c*8,r*8)}
-  if(interior.type==='hotel'){const top=hotelNextLevelTiles();for(let i=0;i<top.length;i++)drawBgTile(img.interior,top[i],0,offsetX+88+i*8,24);for(const [v,m,y] of [[player.hp,player.maxHp,32],[player.mp,player.maxMp,40]]){const nums=String(v).padStart(3,'0').slice(-3).split('').map(Number).concat([0x29],String(m).padStart(3,'0').slice(-3).split('').map(Number));for(let i=0;i<7;i++)drawBgTile(img.interior,nums[i],0,offsetX+88+i*8,y)}const pass=encodeRetailPassword();for(let i=0;i<18;i++)drawBgTile(img.interior,passwordGlyphTile(PASSWORD_ALPHABET.indexOf(pass[i])),0,offsetX+40+i*8,80);for(let i=0,j=highestUnlockedSpell();i<7&&j>=0;i++,j--)drawSimpleMeta(SPELL_META[j],1,offsetX+72+i*16,51)}
+  if(interior.type==='hotel'){
+    const d=interior.hotelDisplay;
+    if(d?.threshold){const top=hotelNextLevelTiles(d.threshold.index,d.threshold.level);for(let i=0;i<top.length;i++)drawBgTile(img.interior,top[i],0,offsetX+88+i*8,24)}
+    for(const [q,y] of [[d?.hp,32],[d?.mp,40]])if(q){const nums=String(q.value).padStart(3,'0').slice(-3).split('').map(Number).concat([0x29],String(q.max).padStart(3,'0').slice(-3).split('').map(Number));for(let i=0;i<7;i++)drawBgTile(img.interior,nums[i],0,offsetX+88+i*8,y)}
+    if(d?.password)for(let i=0;i<18;i++)drawBgTile(img.interior,passwordGlyphTile(PASSWORD_ALPHABET.indexOf(d.password[i])),0,offsetX+40+i*8,80);
+    if(d?.highestSpell!==null&&d?.highestSpell!==undefined)for(let i=0,j=d.highestSpell;i<7&&j>=0;i++,j--)drawSimpleMeta(SPELL_META[j],1,offsetX+72+i*16,51);
+  }
   if(interior.type==='shop'){
     const items=SHOP_PROFILES[interior.shopProfile];for(let i=0;i<6;i++){const id=items[i],meta=ITEM_WORLD_META[id]||0x44;drawSimpleMeta(meta,ITEM_SPRITE_ATTR[id]&3,offsetX+0x60+i*16,0x43,false)}
     drawSimpleMeta(0x46,2,offsetX+0x58,0x33,false)
@@ -1312,7 +1395,15 @@ function updateFrontend(){
 }
 function updateGameInit(){gameInitProgress=Math.min(256,gameInitProgress+8);if(gameInitProgress>=256){gameMode=GAME_MODE.GAMEPLAY;modePhase=0;gameInitProgress=0;menuBtn.hidden=false;say('ADVENTURE START',45)}}
 
-function updateWorldClock(){if(++worldClockSubsecond<60)return;worldClockSubsecond=0;worldClockSecond++;if(worldClockSecond>=0x80){worldClockSecond=0;worldDay++;player.equipment.lamp=false;if(realm()==='dungeon')player.equipment.dungeonLit=false;say(`NEW DAY ${worldDay} · temporary Lamp effect cleared`,65)}if(worldClockSecond===0x38||worldClockSecond===0x78)clearEncounterLocks()}
+function updateWorldClock(){
+  if(++worldClockSubsecond<60)return;worldClockSubsecond=0;worldClockSecond++;
+  if(worldClockSecond>=0x80){worldClockSecond=0;worldDay++;player.equipment.lamp=false;say(`NEW DAY ${worldDay} · temporary Lamp effect cleared`,65)}
+  if(worldClockSecond===0x38||worldClockSecond===0x78)clearEncounterLocks();
+  const phaseChange=[0,8,0x68,0x70].includes(worldClockSecond),inside=[GAME_MODE.INTERIOR,GAME_MODE.SHOP_TRANSACTION].includes(gameMode);
+  // $BA74 skips all world uploads while inside; normal dungeon phase changes
+  // preserve a lit palette. The new-day upload restores dungeon darkness.
+  if(phaseChange&&!inside&&!player.equipment.lamp&&(realm()==='surface'||worldClockSecond===0))reloadWorldPalette();
+}
 function update(){
   pollGamepads();
   frame++;if(!(mode==='title'&&front.mode===FRONT_MODE.ATTRACT)){audioSync();globalThis.VAudio?.tick?.()}if(uiPaused()){pressed.clear();return}rng8();if(mode==='title'){updateFrontend();return}if(mode!=='game'){pressed.clear();return}if(player.dead){frameCounter=(frameCounter+1)&255;if(gameMode===GAME_MODE.GAME_OVER)updateGameOver();else updateDeathSequence();pressed.clear();return}if(endingActive){frameCounter=(frameCounter+1)&255;updateEnding();pressed.clear();return}
@@ -1336,7 +1427,9 @@ function update(){
 function drawSpellEffect(){
   if(spell.type===0)return;
   if(spell.type===2){let meta=spell.dir<2?0x29:0x3D,attr=1;if(spell.dir===0)attr=((spell.frame>>2)&1)?0x41:0x01;else if(spell.dir===1)attr=((spell.frame>>2)&1)?0xC1:0x81;else if(spell.dir===2)attr=((spell.frame>>2)&1)?0x81:0x01;else attr=((spell.frame>>2)&1)?0xC1:0x41;draw8x16From(img.spr,simpleBase[meta],attr&3,spell.x,spell.y,!!(attr&64),!!(attr&128));return}
-  if([1,6].includes(spell.type)&&((spell.timer>>2)&1)===0)drawSimpleMeta(spell.type===1?0x3B:0x33,1,PLAYER_SCREEN.x+4,PLAYER_SCREEN.y-12,false);
+  // Healing/Antidote use reserved OAM $78/$7C, preceding the dynamic queue.
+  // Their Y updates only on timer multiples of four; retain that phase between updates.
+  if([1,6].includes(spell.type)&&spell.timer>1&&spell.timer<=40&&((spell.timer+3)&4)===0){const layer=gfx?.layer;if(gfx)gfx.layer=0;draw8x16(0xA9,0,0x78,0x55);draw8x16(0xAB,0,0x80,0x55);if(gfx)gfx.layer=layer}
 }
 const ENEMY_HUD_PORTRAIT={4:[0xA1,0xA3],5:[0xC1,0xC3],6:[0xD9,0xDB],7:[0xB1,0xB3],8:[0xB9,0xBB],9:[0x89,0x8B],10:[0xC1,0xC3],11:[0xE1,0xE3],15:[0xD1,0xD3]};
 function enemyHudSegments(hp){const out=[];for(let i=0;i<8;i++)out.push(clamp((hp-i*32)>>2,0,8));return out}
@@ -1367,7 +1460,7 @@ function drawRetailHud(isInterior=false,streaming=false){
   else if(!isInterior){const sid=player.selectedSpell;if(player.mp>=2*SPELL_COST[sid]||(frameCounter&4))draw8x16(VGRAPHICS.spellTiles[sid],1,80,208)}
   for(let i=0;i<8;i++){const sl=player.inventory[i]||{id:0};draw8x16(streaming?0x38:VGRAPHICS.itemTiles[sl.id],streaming?0:ITEM_SPRITE_ATTR[sl.id]&3,12+(i&3)*12,193+(i>>2)*16)}
   if(menu||selling){const ci=slot&7;draw8x16(0x3A,1,12+(ci&3)*12,193+(ci>>2)*16);if(menu)draw8x16(0x7B,3,136,64);draw8x16(0x38,0,112,193+((ci>>2)^1)*16)}
-    if(isInterior&&interior.type==='shop'){const sh=selling?{price:sellPrice(id)}:shopShelfSelection();if(sh){const d=retailScoreDigits(sh.price,4);for(let i=0;i<4;i++)drawBgTile(img.interior,d[i],0,40+i*8,48)}}
+  if(isInterior&&interior.type==='shop'){const price=selling?sellPrice(id):shopShelfSelection()?.price||0,d=String(price).padStart(4,'0').slice(-4).split('').map(Number);for(let i=0;i<4;i++)drawBgTile(img.interior,d[i],0,40+i*8,48)}
 }
 function spawnStage16CollisionTest(){
   if(mode!=='game'||player.dead)return;clearActors();const p=playerWorld(),rec=1,pts=[[10,0],[-10,0],[0,-10],[0,10]];
@@ -1407,7 +1500,7 @@ function spawnStage20HiddenRenderTest(){
 
 
 function runStage24VisualTest(){
-  if(mode!=='game'||player.dead)return;clearActors();const p=playerWorld();worldGraphicsGroup^=1;worldClockSecond=worldGraphicsGroup?0x72:0x10;player.equipment.lamp=false;
+  if(mode!=='game'||player.dead)return;clearActors();const p=playerWorld();worldGraphicsGroup^=1;worldClockSecond=worldGraphicsGroup?0x72:0x10;player.equipment.lamp=false;reloadWorldPalette();
   // Six 10-component rainbow metasprites deliberately exceed the 30-sprite dynamic OAM budget.
   for(let i=0;i<6;i++)actors[i]={kind:'rainbow',cls:2,x:p.x-96+i*36,y:p.y-24+(i&1)*20,pal:1,meta:0xD0,logicFrame:0};
   setPatch2x2(p.x+32,p.y,[0x2C,0x2C,0x2C,0x2C]);say(`S24 VISUAL · GROUP ${worldGraphicsGroup?'B':'A'} · ${dayPhase()} · OAM stress + transient patch`,150);
@@ -1442,15 +1535,15 @@ function countLocks(a){let n=0;for(const b of a){let v=b;while(v){n+=v&1;v>>=1}}
 let acc=0,last=performance.now();
 function renderNow(){
   const frontOnly=mode==='title'&&front.mode!==FRONT_MODE.ATTRACT,inside=[GAME_MODE.INTERIOR,GAME_MODE.SHOP_TRANSACTION,GAME_MODE.ENTER_INTERIOR].includes(gameMode);
-  const cfg=frontOnly?(front.mode===FRONT_MODE.TITLE?0:1):inside?5:realm()==='dungeon'?2:worldGraphicsGroup?3:2;
-  gfx?.begin({config:cfg,bank:frontOnly?0:(player.equipment.helmet?1:0)|(player.equipment.mantle?2:0),color:frontOnly?(front.mode===FRONT_MODE.CHARACTER?front.choices[2]:0):player.color,poison:!frontOnly&&player.poison,emphasis:spellIs(7)&&(frameCounter&4)?7:0});
+  const cfg=frontOnly?(front.mode===FRONT_MODE.TITLE?0:1):inside?5:realm()==='dungeon'?4:worldGraphicsGroup?3:2;
+  gfx?.begin({config:cfg,bank:frontOnly?0:(player.equipment.helmet?1:0)|(player.equipment.mantle?2:0),color:frontOnly?(front.mode===FRONT_MODE.CHARACTER?front.choices[2]:0):player.color,poison:!frontOnly&&player.poison,mask:0x18|(spellIs(7)&&(spell.timer&4)?1:0)});
   if(mode==='title')drawTitle();else drawGame();gfx?.flush();
   const message=document.getElementById('runtimeNotice');if(message)message.textContent=noticeTimer>0?notice:'';
 }
 function loop(t){const dt=Math.min(100,t-last);last=t;acc+=dt;while(acc>=1000/60){update();acc-=1000/60}renderNow();requestAnimationFrame(loop)}
 function start(force=false,traits=null){
   if(mode!=='title'&&!force&&!player.dead)return;mode='game';gameMode=GAME_MODE.GAMEPLAY;modePhase=0;resetInteriorState();camera.x=0x0100;camera.y=0x0800;facing=1;moving=false;bump=0;attackTimer=0;attackHitActive=false;actorPlayerMoveBlockMask=0;
-  frameCounter=0xFF;itemSpellMenu.inventoryCursor=0;itemSpellMenu.pendingSpellCast=false;worldClockSubsecond=0;worldClockSecond=0;worldDay=0;worldGraphicsGroup=0;rngState=0;goldBagSpawnLatch=false;sinkSequenceActive=false;hazardTimer=0;magicRainbowActive=false;zuhlStolenPool.fill(0);
+  frameCounter=0xFF;itemSpellMenu.inventoryCursor=0;itemSpellMenu.pendingSpellCast=false;worldClockSubsecond=0;worldClockSecond=0;worldDay=0;worldGraphicsGroup=0;loadedSurfacePalette=1;rngState=0;goldBagSpawnLatch=false;sinkSequenceActive=false;hazardTimer=0;magicRainbowActive=false;zuhlStolenPool.fill(0);
   const sign=traits?.sign??player.sign??0,blood=traits?.blood??player.blood??0,color=traits?.color??player.color??0;player.sign=sign%12;player.blood=blood&3;player.color=color&3;player.level=1;player.expThresholdIndex=INITIAL_EXP_CURVE[player.blood];player.passwordSalt=rng8()&7;
   const residue=player.sign&3;if(residue===0){player.maxHp=64;player.maxMp=32}else if(residue===1){player.maxHp=48;player.maxMp=48}else if(residue===2){player.maxHp=32;player.maxMp=64}else{player.maxHp=32+(rng8()&31);player.maxMp=96-player.maxHp}player.hp=player.maxHp;player.mp=player.maxMp;
   player.poison=false;player.terrainMode='land';player.xp=0;player.gold=0;player.equipment.mantle=false;player.equipment.helmet=false;player.equipment.lamp=false;player.equipment.dungeonLit=false;player.selectedSpell=0;player.spellHealTimer=0;player.itemActionFlags=0;resetInventory();player.hurtBlink=0;player.hpUnderflow=false;player.dead=false;
@@ -1624,7 +1717,8 @@ addEventListener('blur',()=>{resetInput()});document.addEventListener('visibilit
 if(globalThis.__VALKYRIE_TEST_MODE__)globalThis.__VALKYRIE_TEST__={
   get password(){return [...front.password]},
   start,updateFrontend,resetTitleFrontend,beginAttractFrontend,beginCharacterFrontend,beginPasswordFrontend,castSpell,grantStage12TestKit,grantStage11TestKit,grantStage9TestKit,grantStage8TestKit,grantStage7TestKit,useInventorySlot,beginItemSpellMenu,exitItemSpellMenu,updateItemSpellMenu,resolveRelicActionNow,tryDirectionalWarp,updateSpellEffect,updatePlayer,updateActors,update,updateEnding,player,camera,actors,spell,terrainPatches,fixedState,encounterLocks,quickSave,quickLoad,hasSave,snapshotGame,restoreSnapshot,buyShopItem,sellInventorySlot,hotelRest,beginDeath,updateDeathSequence,updateGameOver,encodeRetailPassword,decodeRetailPassword,applyRetailPassword,applyHotelLevelUps,expThreshold,triggerMagicRainbow,updatePlayerStatusEffects,spawnStage12AITest,cycleStage13MoveMode,spawnStage16CollisionTest,spawnStage17TimingTest,spawnStage18ContactTest,spawnStage19DropTest,spawnStage20HiddenRenderTest,runStage24VisualTest,runStage25TransitionTest,renderNow,beginMapTransition,updateMapTransition,refreshHotelCheckpoint,clearHotelCheckpoint,getHotelCheckpoint,hasHotelCheckpoint,serviceTerrainPatchStreaming,surfacePaletteFamily,worldBackgroundAtlas,metaComponentCount,playerOamComponentCount,spellOamComponentCount,beginInterior,beginLeaveInterior,updateEnterInteriorTransition,updateLeaveInteriorTransition,updateInterior,updateShopTransaction,serviceHotelRestTick,shopShelfSelection,spawnStage15CollisionTest:spawnStage16CollisionTest,
-  helpers:{BUILD_STAGE,hotelNextLevelTiles,passwordGlyphTile,validInventorySlots,validHotelCheckpointShape,validSnapshotShape,highestUnlockedSpell,moveInventoryCursor,moveSpellCursor,itemMenuPressed,itemMenuCancelPressed,weaponDamage,fireballDamageFor,rng8,hasInventoryItem,findInventorySlot,addInventoryItem,clearActors,initActorFromSpawnToken,setPatch2x2,resolveLiveWorld,collisionSample,playerTileSample,starFluteActive,invisibilityActive,buyPrice,sellPrice,shopProfileForWorld,rotate72Right,rotate72Left,transposeEncode,transposeDecode,audioPlay,audioSync,toggleAudio,dayPhase,clockLabel,damageFromActorPower,subtractPlayerHpRetail,spawnEnemyProjectile,maybeBreakDefensiveEquipment,dispatchSpecialTerrain,setPoison,equipmentSummary,rawHazardDamage,hurtBlinkPaletteActive,playerRenderPalette,addGoldRetail,swordRectOverlapsPoint,swordBoxOverlapsPoint,returnOneZuhlStolenItem,zhulStealFirstItem,reverseActorDirection,terrainEventMarker,playerMoveMeta,playerAttackMeta,bodyOverlap,actorDirectionToPlayer,updateDesiredDirection,actorProximityOverlap,actorMovementBlocked,registerActorBodyOverlap,movementAllowed,moveCombatActor,terrainPassableForActor,serviceShizasuLockedContact,enemyHudSegments,retailHpTiles,retailEnemyTiles,retailScoreDigits,drawRetailHud,drawComplexMetaFrom,drawComplexMetaLimited,spawnFlashMeta,actorRenderOrder,tryPickupItem,beginShopTransaction,hotelBedZone,interiorBlocked,setInteriorPos(x,y){interior.x=x;interior.y=y},setPressed(k){pressed.add(k)},setHeldDirection(v){resetInput();const k=['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'][v];if(k)keys.add(k)},setFacing(v){facing=v&3},setServiceMode(v){serviceMode=v},setWorldClock(v){worldClockSecond=v&0x7F;worldClockSubsecond=59},setWorldGraphicsGroup(v){worldGraphicsGroup=v&1},setFrameCounter(v){frameCounter=v&255},setRng(v){rngState=v&255},setAttackHitActive(v){attackHitActive=!!v},setP2AB(v){p2ABHeld=!!v},frontPress(k){pressed.add(k)},setEndingPhase(phase,scene=0,scroll=0,timer=0,loadedScene=phase>=3?scene:-1){mode='game';endingActive=true;gameMode=GAME_MODE.ENDING;ending.phase=phase;ending.scene=scene;ending.loadedScene=loadedScene;ending.scroll=scroll;ending.timer=timer},setFrontChoices(sign,blood,color,cursor=0){front.choices=[sign%12,blood&3,color&3];front.cursor=cursor%3},setFrontPassword(chars){for(let i=0;i<18;i++)front.password[i]=Number(chars[i])||0}},
+  helpers:{BUILD_STAGE,reloadWorldPalette,paletteFamilyForPhase,hotelNextLevelTiles,passwordGlyphTile,validInventorySlots,validHotelCheckpointShape,validSnapshotShape,highestUnlockedSpell,moveInventoryCursor,moveSpellCursor,itemMenuPressed,itemMenuCancelPressed,weaponDamage,fireballDamageFor,rng8,hasInventoryItem,findInventorySlot,addInventoryItem,clearActors,initActorFromSpawnToken,setPatch2x2,resolveLiveWorld,collisionSample,playerTileSample,starFluteActive,invisibilityActive,buyPrice,sellPrice,shopProfileForWorld,rotate72Right,rotate72Left,transposeEncode,transposeDecode,audioPlay,audioSync,toggleAudio,dayPhase,clockLabel,damageFromActorPower,subtractPlayerHpRetail,spawnEnemyProjectile,maybeBreakDefensiveEquipment,dispatchSpecialTerrain,setPoison,equipmentSummary,rawHazardDamage,hurtBlinkPaletteActive,playerRenderPalette,addGoldRetail,swordRectOverlapsPoint,swordBoxOverlapsPoint,returnOneZuhlStolenItem,zhulStealFirstItem,reverseActorDirection,terrainEventMarker,playerMoveMeta,playerAttackMeta,bodyOverlap,actorDirectionToPlayer,updateDesiredDirection,actorProximityOverlap,actorMovementBlocked,registerActorBodyOverlap,movementAllowed,moveCombatActor,terrainPassableForActor,serviceShizasuLockedContact,enemyHudSegments,retailHpTiles,retailEnemyTiles,retailScoreDigits,drawRetailHud,drawComplexMetaFrom,drawComplexMetaLimited,spawnFlashMeta,actorRenderOrder,tryPickupItem,beginShopTransaction,hotelBedZone,interiorBlocked,setInteriorPos(x,y){interior.x=x;interior.y=y},setPressed(k){pressed.add(k)},setHeldDirection(v){resetInput();const k=['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'][v];if(k)keys.add(k)},setFacing(v){facing=v&3},setServiceMode(v){serviceMode=v},setWorldClock(v){worldClockSecond=v&0x7F;worldClockSubsecond=59},setWorldGraphicsGroup(v){worldGraphicsGroup=v&1},setFrameCounter(v){frameCounter=v&255},setRng(v){rngState=v&255},setAttackHitActive(v){attackHitActive=!!v},setP2AB(v){p2ABHeld=!!v},frontPress(k){pressed.add(k)},setEndingPhase(phase,scene=0,scroll=0,timer=0,loadedScene=phase>=3?scene:-1){mode='game';endingActive=true;gameMode=GAME_MODE.ENDING;ending.phase=phase;ending.scene=scene;ending.loadedScene=loadedScene;ending.scroll=scroll;ending.timer=timer},setFrontChoices(sign,blood,color,cursor=0){front.choices=[sign%12,blood&3,color&3];front.cursor=cursor%3},setFrontPassword(chars){for(let i=0;i<18;i++)front.password[i]=Number(chars[i])||0}},
+  actorMetaSpec,drawActor,drawActorOamLimited,
   zuhlStolenPool,gfx,get imagesReady(){return Object.keys(IMAGE_SOURCES).every(k=>img[k]?.complete!==false&&!!img[k])},get imageLoadState(){return{loaded,expected:Object.keys(IMAGE_SOURCES).length,keys:Object.keys(img)}},
   get state(){return{mode,gameMode,modePhase,front:{mode:front.mode,phase:front.phase,titleScroll:front.titleScroll,titleFrame:front.titleFrame,titleSeconds:front.titleSeconds,continueSelected:front.continueSelected,cursor:front.cursor,choices:[...front.choices],passwordCursor:front.passwordCursor,passwordFailures:front.passwordFailures,passwordErrorTimer:front.passwordErrorTimer,attractDirection:front.attractDirection,attractStream:front.attractStream},gameInitProgress,interior:{...interior},endingActive,endingPhase:ending.phase,endingScene:ending.scene,endingLoadedScene:ending.loadedScene,endingTimer:ending.timer,endingScroll:ending.scroll,facing,frameCounter,notice,deathState,deathTimer,gameOverTimer,serviceMode,activeShopProfile,worldClockSecond,worldDay,worldGraphicsGroup,oamDynamicUsed,oamDynamicClipped,dayPhase:dayPhase(),sinkSequenceActive,hazardTimer,magicRainbowActive,actorPlayerMoveBlockMask,itemSpellMenu:{...itemSpellMenu},mapTransition:{...mapTransition},hotelCheckpoint:hotelCheckpoint?JSON.parse(JSON.stringify(hotelCheckpoint)):null,p2ABHeld}}
 };
