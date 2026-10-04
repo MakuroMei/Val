@@ -1,23 +1,42 @@
 (()=>{
 'use strict';
 const D=globalThis.VAUDIO_DATA||{requests:{},pitch:[],noise:[]};
-const states=new Map(), counters=new Uint8Array(16);
+const states=new Map(), voices=Array(16).fill(null), counters=new Uint8Array(16);
 const BGM_IDS=new Set(Array.from({length:12},(_,i)=>0x2B+i));
 const LENGTHS=[10,254,20,2,40,4,80,6,160,8,60,10,14,12,26,14,12,16,24,18,48,20,96,22,192,24,72,26,16,28,32,30];
 const CPU_HZ=1789773, DUTIES=[.125,.25,.5,.75];
-let frame=0, muted=false, ctx=null, master=null, outputs=null, unlocked=false, lastError=null, bgmContext=null;
+let frame=0, muted=false, ctx=null, master=null, outputs=null, unlocked=false, lastError=null, bgmContext=null, poisonOnly=false;
 try{muted=localStorage.getItem('valkyrie.frontend.audio.muted')==='1'}catch{}
 function meta(id){return D.requests[id]||D.requests[String(id)]||null}
-function stop(id){states.delete(id)}
+// Retail request=0 does not erase the logical voice's cursor/countdown or
+// shared loop counters. Poison request=2 can continue them after the menu.
+function stop(id){states.delete(Number(id))}
 function stopMany(ids){for(const id of ids)stop(id)}
 function start(id){
   id=Number(id);const m=meta(id);if(!m)return false;
   for(const [oid,s] of [...states])if(s.voice===m.v&&oid!==id){if(oid<id)return false;states.delete(oid)}
-  states.set(id,{id,voice:m.v,channel:m.c,bytes:m.b,cursor:1,duration:1,countdown:0,reg0:0x8F,sweep:0x78,gate:0,level:12,note:0,rest:true,started:frame,noteStarted:frame});
+  if(id>=0x2E&&id<=0x33)poisonOnly=false;
+  const s={duration:1,reg0:0x8F,level:12,note:0,rest:true,noteStarted:frame,...voices[m.v],id,voice:m.v,channel:m.c,bytes:m.b,cursor:1,countdown:0,sweep:0x78,gate:0,started:frame};
+  voices[m.v]=s;states.set(id,s);
   return true;
 }
+function request(id,value=1){
+  id=Number(id);if(!value){stop(id);return true}if(value===1)return start(id);
+  const m=meta(id),s=m&&voices[m.v];if(!s||s.id!==id)return false;
+  if(states.has(id))return true;
+  for(const [oid,other] of states)if(other.voice===m.v&&oid!==id){if(oid<id)return false;states.delete(oid)}
+  states.set(id,s);return true;
+}
 function play(ids){for(const id of (Array.isArray(ids)?ids:[ids]))start(id)}
-function allOff(){states.clear();counters.fill(0);bgmContext=null;renderPhysical()}
+function stopAllRequests(){states.clear();renderPhysical()}
+// Hard reset for title/new sessions. This intentionally differs from retail's
+// StopAllAudioRequests, which callers use through stopAllRequests above.
+function allOff(){states.clear();voices.fill(null);counters.fill(0);bgmContext=null;poisonOnly=false;renderPhysical()}
+function resumeContext({realm='surface',poison=false}={}){
+  poisonOnly=!!poison&&![0x2E,0x2F,0x30,0x31,0x32,0x33].some(id=>states.has(id));
+  if(poison){for(const id of [0x2B,0x2C,0x2D])request(id,2)}
+  else play(realm==='dungeon'?[0x2E,0x2F,0x30]:[0x31,0x32,0x33]);
+}
 function parseState(s){
   // $63 is scratch for this note, unlike the persistent register/gate state.
   const b=s.bytes;let guard=0;s.sweep=0x78;
@@ -155,17 +174,22 @@ async function unlock(){
 }
 function setMuted(v){muted=!!v;try{localStorage.setItem('valkyrie.frontend.audio.muted',muted?'1':'0')}catch{}if(master&&ctx.state!=='closed'){const now=ctx.currentTime;master.gain.cancelScheduledValues(now);master.gain.setTargetAtTime(muted?0:.78,now,.01)}return muted}
 function toggleMuted(){return setMuted(!muted)}
-function ensureBgm({game=false,realm='surface',poison=false,ending=false}={}){
+function ensureBgm({game=false,realm='surface',poison=false,ending=false,preserve=false}={}){
+  // Interior / transition handlers explicitly decide which requests to clear.
+  // In particular poison music and the low-HP warning survive interior entry.
+  if(!game&&!ending&&preserve)return;
+  if(!poison)poisonOnly=false;
   const context=ending?'ending':game?`${realm}:${poison}`:'off',changed=context!==bgmContext;bgmContext=context;
   const wanted=new Set();
   if(ending){wanted.add(0x34);wanted.add(0x35);wanted.add(0x36)}
-  else if(game){const base=realm==='dungeon'?[0x2E,0x2F,0x30]:[0x31,0x32,0x33];for(const id of base)wanted.add(id);if(poison)for(const id of [0x2B,0x2C,0x2D])wanted.add(id)}
+  else if(game){const base=realm==='dungeon'?[0x2E,0x2F,0x30]:[0x31,0x32,0x33];if(!poisonOnly)for(const id of base)wanted.add(id);if(poison)for(const id of [0x2B,0x2C,0x2D])wanted.add(id)}
   for(const id of BGM_IDS)if(states.has(id)&&!wanted.has(id))stop(id);
   // The CHR-backed ending voices have END tokens: retail triggers them once.
   // Persistent gameplay voices may still need restarting after preemption.
   for(const id of wanted)if(!states.has(id)&&(!ending||changed))start(id);
 }
 function status(){return{muted,unlocked:!!ctx&&ctx.state==='running',contextState:ctx?.state||'unavailable',active:[...states.keys()].sort((a,b)=>a-b),frame,error:lastError}}
-const api={start,play,stop,stopMany,allOff,tick,unlock,setMuted,toggleMuted,ensureBgm,status,get muted(){return muted},get active(){return[...states.keys()].sort((a,b)=>a-b)}};
+const api={start,request,play,stop,stopMany,stopAllRequests,resumeContext,allOff,tick,unlock,setMuted,toggleMuted,ensureBgm,status,get muted(){return muted},get active(){return[...states.keys()].sort((a,b)=>a-b)}};
+if(globalThis.__VALKYRIE_TEST_MODE__)api.inspect=()=>({counters:Array.from(counters),voices:voices.map(s=>s&&{id:s.id,cursor:s.cursor,countdown:s.countdown,duration:s.duration,reg0:s.reg0,gate:s.gate}),active:[...states.keys()].sort((a,b)=>a-b)});
 globalThis.VAudio=api;
 })();
