@@ -2,76 +2,140 @@
 'use strict';
 const D=globalThis.VAUDIO_DATA||{requests:{},pitch:[],noise:[]};
 const states=new Map(), voices=Array(16).fill(null), counters=new Uint8Array(16);
+const requests=new Uint8Array(256), owners=new Uint8Array(16).fill(0x80), shadow=new Uint8Array(16);
+const committed=new Uint8Array(24);committed[0x17]=0xC0;
+let dirty=0, enable=0, restMask=0, dac=0, claims=Array(4).fill(null), registerWrites=[], registerHandler=null;
 const BGM_IDS=new Set(Array.from({length:12},(_,i)=>0x2B+i));
 const LENGTHS=[10,254,20,2,40,4,80,6,160,8,60,10,14,12,26,14,12,16,24,18,48,20,96,22,192,24,72,26,16,28,32,30];
 const CPU_HZ=1789773, DUTIES=[.125,.25,.5,.75];
-let frame=0, muted=false, ctx=null, master=null, outputs=null, unlocked=false, lastError=null, bgmContext=null, poisonOnly=false;
+let frame=0, muted=false, ctx=null, master=null, outputs=null, pcmOutput=null, unlocked=false, lastError=null, bgmContext=null, poisonOnly=false;
 try{muted=localStorage.getItem('valkyrie.frontend.audio.muted')==='1'}catch{}
 function meta(id){return D.requests[id]||D.requests[String(id)]||null}
 // Retail request=0 does not erase the logical voice's cursor/countdown or
 // shared loop counters. Poison request=2 can continue them after the menu.
-function stop(id){states.delete(Number(id))}
+function stop(id){id=Number(id);requests[id]=0;states.delete(id)}
 function stopMany(ids){for(const id of ids)stop(id)}
 function start(id){
-  id=Number(id);const m=meta(id);if(!m)return false;
-  for(const [oid,s] of [...states])if(s.voice===m.v&&oid!==id){if(oid<id)return false;states.delete(oid)}
+  id=Number(id);const m=meta(id);if(!m||id<0||id>255)return false;
+  // Writing a START request is immediate. Voice arbitration and cursor reset
+  // happen when AudioFrame scans the slot, as they do in the retail driver.
+  requests[id]=1;states.set(id,{id,voice:m.v,channel:m.c,pending:true});
   if(id>=0x2E&&id<=0x33)poisonOnly=false;
-  const s={duration:1,reg0:0x8F,level:12,note:0,rest:true,noteStarted:frame,...voices[m.v],id,voice:m.v,channel:m.c,bytes:m.b,cursor:1,countdown:0,sweep:0x78,gate:0,started:frame};
-  voices[m.v]=s;states.set(id,s);
   return true;
 }
 function request(id,value=1){
   id=Number(id);if(!value){stop(id);return true}if(value===1)return start(id);
   const m=meta(id),s=m&&voices[m.v];if(!s||s.id!==id)return false;
-  if(states.has(id))return true;
-  for(const [oid,other] of states)if(other.voice===m.v&&oid!==id){if(oid<id)return false;states.delete(oid)}
-  states.set(id,s);return true;
+  requests[id]=value&255;states.set(id,s);return true;
 }
 function play(ids){for(const id of (Array.isArray(ids)?ids:[ids]))start(id)}
-function stopAllRequests(){states.clear();renderPhysical()}
+function stopAllRequests(){requests.fill(0);states.clear();renderPhysical()}
 // Hard reset for title/new sessions. This intentionally differs from retail's
 // StopAllAudioRequests, which callers use through stopAllRequests above.
-function allOff(){states.clear();voices.fill(null);counters.fill(0);bgmContext=null;poisonOnly=false;renderPhysical()}
+function allOff(){
+  requests.fill(0);states.clear();voices.fill(null);counters.fill(0);owners.fill(0x80);shadow.fill(0);
+  committed.fill(0);committed[0x17]=0xC0;
+  dirty=enable=restMask=dac=0;claims.fill(null);bgmContext=null;poisonOnly=false;
+  pcmOutput?.frame([], {reset:true});registerHandler?.([], {reset:true});renderPhysical();
+}
 function resumeContext({realm='surface',poison=false}={}){
   poisonOnly=!!poison&&![0x2E,0x2F,0x30,0x31,0x32,0x33].some(id=>states.has(id));
   if(poison){for(const id of [0x2B,0x2C,0x2D])request(id,2)}
   else play(realm==='dungeon'?[0x2E,0x2F,0x30]:[0x31,0x32,0x33]);
 }
+function claim(s){
+  const bit=1<<s.channel;if(enable&bit)return false;
+  enable|=bit;claims[s.channel]=s.id;if(s.rest)restMask|=bit;return true;
+}
+function beginToken(s,rest){
+  s.rest=rest;s.countdown=s.duration&0x7F;
+  return claim(s);
+}
+function buildShadow(s){
+  const offset=(s.channel&3)*4;
+  const timer=s.channel===3?s.note:(D.timers?.[s.note]??Math.round(CPU_HZ/(16*(D.pitch[s.note]||220))-1));
+  shadow[offset]=s.reg0;shadow[offset+1]=s.sweep;shadow[offset+2]=timer&255;
+  shadow[offset+3]=((s.gate&1?s.gate:8)&0xF8)|(s.channel===3?0:timer>>8);
+  dirty|=1<<s.channel;
+}
 function parseState(s){
   // $63 is scratch for this note, unlike the persistent register/gate state.
   const b=s.bytes;let guard=0;s.sweep=0x78;
-  while(states.has(s.id)&&guard++<256){
-    if(s.cursor<1||s.cursor>=b.length){states.delete(s.id);return}
-    const t=b[s.cursor++]&255;
-    if(t<=0x5F){s.note=t;s.rest=false;s.noteStarted=frame;s.countdown=Math.max(1,s.duration|0);return}
-    if(t===0x60){s.rest=true;s.countdown=Math.max(1,s.duration|0);return}
-    if(t===0x61){states.delete(s.id);return}
-    if(t===0x62){s.reg0=b[s.cursor++]??s.reg0;continue}
-    if(t===0x63){s.sweep=b[s.cursor++]??0x78;continue}
-    if(t===0x64){start(b[s.cursor++]??0);continue}
-    if(t===0x65){counters[(b[s.cursor++]??0)&15]=0;continue}
+  const read=()=>{const value=b[s.cursor]??0x61;s.cursor=(s.cursor+1)&255;return value&255};
+  while(requests[s.id]&&guard++<256){
+    const t=read();
+    if(t<=0x5F){s.note=t;s.noteStarted=frame;if(beginToken(s,false))buildShadow(s);return}
+    if(t===0x60){beginToken(s,true);return}
+    if(t===0x61){
+      // END clears its request and owner, but still claims a REST for this
+      // scan. A lower-priority voice cannot steal that channel until later.
+      stop(s.id);owners[s.voice]=0x80;beginToken(s,true);return;
+    }
+    if(t===0x62){s.reg0=read();continue}
+    if(t===0x63){s.sweep=read();continue}
+    if(t===0x64){start(read());continue}
+    if(t===0x65){counters[read()&15]=0;continue}
     if(t===0x66||t===0x67){
-      const packed=b[s.cursor++]??0,target=b[s.cursor++]??1,count=(packed>>4)&15,ci=packed&15;
+      const packed=read(),target=read(),count=(packed>>4)&15,ci=packed&15;
       counters[ci]=(counters[ci]+1)&255;
       if((t===0x66&&counters[ci]!==count)||(t===0x67&&counters[ci]===count))s.cursor=target;
       continue;
     }
-    if(t===0x68){s.cursor=b[s.cursor]??1;continue}
-    if(t===0x69){s.gate=(b[s.cursor++]??0)|1;s.reg0&=0xDF;continue}
+    if(t===0x68){s.cursor=read();continue}
+    if(t===0x69){s.gate=read()|1;s.reg0&=0xDF;continue}
     if(t===0x6A){s.gate=0;s.reg0|=0x20;continue}
-    if(t>=0x70&&t<=0x7F){s.level=t&15;if(s.channel<=1)s.reg0=(s.reg0&0xF0)|s.level;continue}
-    if(t>=0x80){s.duration=t&0x7F;continue}
+    if(t>=0x70&&t<=0x7F){
+      s.level=t&15;if(s.channel<=1)s.reg0=(s.reg0&0xF0)|s.level;
+      else dac=(s.level^15)<<3;
+      continue;
+    }
+    if(t>=0x80){s.duration=t&0x7F;s.rest=false;continue}
   }
-  if(guard>=256)states.delete(s.id);
+  // Defined retail streams always terminate parsing within this bound. The
+  // guard keeps malformed external definitions from locking the game loop.
+  if(guard>=256)stop(s.id);
 }
+function service(id){
+  const m=meta(id);if(!m||!requests[id])return;
+  let s=voices[m.v];
+  if(requests[id]===1){
+    requests[id]=2;
+    const previous=owners[m.v];
+    if(previous<0x80&&previous!==id){
+      if(previous<id){stop(id);return}
+      stop(previous);
+    }
+    owners[m.v]=id;
+    s={duration:0,reg0:0,level:0,note:0,rest:false,noteStarted:frame,...s,id,voice:m.v,channel:m.c,bytes:m.b,cursor:1,gate:0,started:frame};
+    voices[m.v]=s;states.set(id,s);parseState(s);return;
+  }
+  if(!s)return;
+  // An active value 2 continues the RAM state for the logical voice, including
+  // byte-wrapped countdowns. It does not perform START arbitration/reset.
+  s.id=id;s.channel=m.c;s.bytes=m.b;states.set(id,s);
+  s.countdown=(s.countdown-1)&255;
+  if(s.countdown===0)parseState(s);else claim(s);
+}
+function registerFrame(){return registerWrites.map(write=>write.slice())}
+function onRegisterFrame(handler){registerHandler=typeof handler==='function'?handler:null}
 function tick(){
   frame++;
-  for(const id of [...states.keys()].sort((a,b)=>a-b)){
-    const s=states.get(id);if(!s)continue;
-    if(s.countdown>0)s.countdown--;
-    if(s.countdown<=0)parseState(s);
+  // AudioFrame first commits the previous scan's shadow. Order matters for
+  // enabling a channel before its $4003/$4007/$400B/$400F length reload.
+  registerWrites=[[0x4011,dac],[0x4015,enable]];
+  for(let channel=0;channel<4;channel++)if(dirty&(1<<channel)){
+    for(let offset=channel*4;offset<channel*4+4;offset++)registerWrites.push([0x4000+offset,shadow[offset]]);
   }
+  dirty=0;
+  for(let voice=15;voice>=0;voice--)if(!requests[owners[voice]])owners[voice]=0x80;
+  enable=restMask=0;claims=Array(4).fill(null);
+  // Commands may start a later slot during this scan, so take no key snapshot.
+  const limit=Math.max(72,...Object.keys(D.requests).map(id=>Number(id)+1));
+  for(let id=0;id<limit;id++)service(id);
+  if(!(enable&0x0C))dac=Math.max(0,dac-8);
+  enable^=restMask;
   renderPhysical();
+  const result=registerFrame();for(const [address,value] of result)committed[address-0x4000]=value;pcmOutput?.frame(result);registerHandler?.(result);return result;
 }
 function pulseTimer(s){
   let timer=D.timers?.[s.note]??Math.round(CPU_HZ/(16*(D.pitch[s.note]||220))-1);
@@ -148,8 +212,21 @@ function buildAudio(){
   const AC=globalThis.AudioContext||globalThis.webkitAudioContext;if(!AC)return false;
   let ac=null;
   try{
+    pcmOutput?.dispose();pcmOutput=null;
     ac=new AC({latencyHint:'interactive'});
     const nextMaster=ac.createGain(),nextOutputs=[];nextMaster.gain.value=muted?0:.78;nextMaster.connect(ac.destination);
+    if(globalThis.VAudioPCM&&globalThis.VAPU&&typeof ac.createScriptProcessor==='function'){
+      const nextPCM=new globalThis.VAudioPCM(ac,nextMaster);
+      // A rebuilt device restores the last uploaded registers, including
+      // long notes whose latest frame had no dirty block. Counter/phase state
+      // starts fresh on this device; ordinary frames keep the original delay.
+      const restore=[[0x4011,committed[0x11]],[0x4015,committed[0x15]]];
+      for(let address=0;address<16;address++)restore.push([0x4000+address,committed[address]]);
+      nextPCM.apu.writeBatch(restore);
+      ctx=ac;master=nextMaster;outputs=null;pcmOutput=nextPCM;unlocked=ac.state==='running';lastError=null;
+      ac.addEventListener?.('statechange',()=>{if(ctx===ac){unlocked=ac.state==='running';if(!unlocked)pcmOutput?.clear()}});
+      return true;
+    }
     const waves=pulseWaves(ac);
     for(let ch=0;ch<3;ch++){
       const osc=ac.createOscillator(),gain=ac.createGain();osc.type=ch===2?'triangle':'square';if(ch<2)osc.setPeriodicWave(waves[2]);gain.gain.value=0;osc.connect(gain);gain.connect(nextMaster);osc.start();nextOutputs.push({osc,gain,waves,duty:2});
@@ -161,7 +238,7 @@ function buildAudio(){
     renderPhysical();return true;
   }catch(e){
     try{ac?.close?.()?.catch?.(()=>{})}catch{}
-    ctx=null;master=null;outputs=null;unlocked=false;lastError=String(e?.message||e);return false;
+    pcmOutput?.dispose();pcmOutput=null;ctx=null;master=null;outputs=null;unlocked=false;lastError=String(e?.message||e);return false;
   }
 }
 async function unlock(){
@@ -188,8 +265,14 @@ function ensureBgm({game=false,realm='surface',poison=false,ending=false,preserv
   // Persistent gameplay voices may still need restarting after preemption.
   for(const id of wanted)if(!states.has(id)&&(!ending||changed))start(id);
 }
-function status(){return{muted,unlocked:!!ctx&&ctx.state==='running',contextState:ctx?.state||'unavailable',active:[...states.keys()].sort((a,b)=>a-b),frame,error:lastError}}
-const api={start,request,play,stop,stopMany,stopAllRequests,resumeContext,allOff,tick,unlock,setMuted,toggleMuted,ensureBgm,status,get muted(){return muted},get active(){return[...states.keys()].sort((a,b)=>a-b)}};
-if(globalThis.__VALKYRIE_TEST_MODE__)api.inspect=()=>({counters:Array.from(counters),voices:voices.map(s=>s&&{id:s.id,cursor:s.cursor,countdown:s.countdown,duration:s.duration,reg0:s.reg0,gate:s.gate}),active:[...states.keys()].sort((a,b)=>a-b)});
+function status(){return{muted,unlocked:!!ctx&&ctx.state==='running',contextState:ctx?.state||'unavailable',backend:pcmOutput?'software-apu':outputs?'oscillator-fallback':'unavailable',pcm:pcmOutput?.status()??null,active:[...states.keys()].sort((a,b)=>a-b),frame,error:lastError}}
+const api={start,request,play,stop,stopMany,stopAllRequests,resumeContext,allOff,tick,registerFrame,onRegisterFrame,hardwareState,unlock,setMuted,toggleMuted,ensureBgm,status,get muted(){return muted},get active(){return[...states.keys()].sort((a,b)=>a-b)}};
+function hardwareState(){
+  const field=(key,transform=value=>value)=>voices.map(s=>s?transform(s[key]):0);
+  return {dirty,enable,dac,rest:restMask,shadow:Array.from(shadow),claims:claims.slice(),writes:registerFrame(),
+    requests:Array.from(requests.slice(0,72)),owner:Array.from(owners),cursor:field('cursor'),reg0:field('reg0'),
+    duration:voices.map(s=>s?(s.duration&0x7F)|(s.rest?0x80:0):0),countdown:field('countdown'),gate:field('gate'),counters:Array.from(counters)};
+}
+if(globalThis.__VALKYRIE_TEST_MODE__)api.inspect=()=>({...hardwareState(),voices:voices.map(s=>s&&{id:s.id,cursor:s.cursor,countdown:s.countdown,duration:s.duration,reg0:s.reg0,gate:s.gate}),active:[...states.keys()].sort((a,b)=>a-b)});
 globalThis.VAudio=api;
 })();
